@@ -272,7 +272,8 @@ jobs:
         run: |
           cp .\kernel\include\preset.h .\tools\
           cd tools
-          (Get-Content -Path "Makefile") -replace '\$\(CC\)', " x86_64-pc-msys-gcc.exe" | Set-Content -Path "Makefile"
+          D:\a\_temp\msys64\usr\bin\x86_64-pc-msys-gcc.exe --version
+          (Get-Content -Path "Makefile") -replace '\$\(CC\)', "x86_64-pc-msys-gcc.exe" | Set-Content -Path "Makefile"
           (Get-Content -Path "Makefile") -replace '\${CC}', "x86_64-pc-msys-gcc.exe" | Set-Content -Path "Makefile"
       - name: build
         shell: cmd
