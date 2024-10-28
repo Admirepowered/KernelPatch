@@ -684,3 +684,21 @@ int dump_kallsym(const char *kimg_path)
     free_kernel_file(&kernel_file);
     return 0;
 }
+int dump_ikconfig(const char *kimg_path)
+{
+    if (!kimg_path) tools_loge_exit("empty kernel image\n");
+    set_log_enable(true);
+    // read image files
+    kernel_file_t kernel_file;
+    read_kernel_file(kimg_path, &kernel_file);
+
+    kallsym_t kallsym;
+    if (analyze_kallsym_info(&kallsym, kernel_file.kimg, kernel_file.kimg_len, ARM64, 1)) {
+        fprintf(stdout, "analyze_kallsym_info error\n");
+        return -1;
+    }
+    dump_all_symbols(&kallsym, kernel_file.kimg);
+    set_log_enable(false);
+    free_kernel_file(&kernel_file);
+    return 0;
+}

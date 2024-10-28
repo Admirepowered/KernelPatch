@@ -43,6 +43,7 @@ void print_usage(char **argv)
         "  -u, --unpatch                    Unpatch patched kernel image(-i).\n"
         "  -r, --reset-skey                 Reset superkey of patched image(-i).\n"
         "  -d, --dump                       Dump kallsyms infomations of kernel image(-i).\n"
+        "  -f, --flag                       Dump ikconfig infomations of kernel image(-i).\n"
         "  -l, --list                       Print all patch informations of kernel image if (-i) specified.\n"
         "                                   Print extra item informations if (-M) specified.\n"
         "                                   Print KernelPatch image informations if (-k) specified.\n"
@@ -81,6 +82,8 @@ int main(int argc, char *argv[])
                                  { "unpatch", no_argument, NULL, 'u' },
                                  { "resetkey", no_argument, NULL, 'r' },
                                  { "dump", no_argument, NULL, 'd' },
+                                 { "flag", no_argument, NULL, 'f'},
+
 
                                  { "list", no_argument, NULL, 'l' },
 
@@ -126,6 +129,7 @@ int main(int argc, char *argv[])
         case 'u':
         case 'r':
         case 'd':
+        case 'f':
         case 'l':
             cmd = opt;
             break;
@@ -189,6 +193,8 @@ int main(int argc, char *argv[])
                                extra_config_num);
     } else if (cmd == 'd') {
         ret = dump_kallsym(kimg_path);
+    } else if (cmd == 'f') {
+        ret = dump_ikconfig(kimg_path);
     } else if (cmd == 'u') {
         ret = unpatch_img(kimg_path, out_path);
     } else if (cmd == 'r') {
