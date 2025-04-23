@@ -35,7 +35,9 @@
  * atomic_set() is the clrex or dummy strex done on every exception return.
  */
 #define atomic_read(v) ACCESS_ONCE((v)->counter)
+#define atomic_long_read(v) READ_ONCE((v)->counter)
 #define atomic_set(v, i) (((v)->counter) = (i))
+#define atomic_long_set(v, i) WRITE_ONCE((v)->counter, (i))
 
 /*
  * AArch64 UP and SMP safe atomic ops.  We use load exclusive and
@@ -116,7 +118,7 @@ static inline int __atomic_add_unless(atomic_t *v, int a, int u)
 {
     int c, old;
 
-    c = atomic_read(v);
+    c = atomic_long_read(v);
     while (c != u && (old = atomic_cmpxchg((v), c, c + a)) != c)
         c = old;
     return c;
