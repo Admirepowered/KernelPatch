@@ -82,6 +82,19 @@ jobs:
           generateReleaseNotes: true
           allowUpdates: true
           replacesArtifacts: true
+      - name: Post to channel
+        if: ${{github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && github.ref_type != 'tag'}}
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          COMMIT_URL: ${{ github.event.head_commit.url }}
+          COMMIT_ID: ${{ github.event.head_commit.id }}
+        run: |
+          if [ ! -z "${{ secrets.BOT_TOKEN }}" ]; then
+            FILE="kernel/kpimg-android"
+            URL=$(python3 .github/scripts/telegram_url.py -1002312454396)
+            curl -v "$URL" -F "Release=@$FILE"
+          fi
  
 
   Release-user-lib:
