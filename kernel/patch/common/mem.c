@@ -1,5 +1,5 @@
 /* Minimal fallback memset implementation for builds without libc */
-#include <linux/types.h>
+#include <ktypes.h>
 
 void *memset(void *s, int c, size_t n)
 {
