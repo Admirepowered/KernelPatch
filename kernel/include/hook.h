@@ -242,6 +242,7 @@ int32_t branch_absolute(uint32_t *buf, uint64_t addr);
 int32_t ret_absolute(uint32_t *buf, uint64_t addr);
 
 hook_err_t hook_prepare(hook_t *hook);
+hook_err_t relo_ldr(hook_t *hook, uint64_t inst_addr, uint32_t inst, uint32_t type);
 void hook_install(hook_t *hook);
 void hook_uninstall(hook_t *hook);
 
