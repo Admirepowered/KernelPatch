@@ -16,9 +16,6 @@ extern char *kfunc_def(kvasprintf)(gfp_t gfp, const char *fmt, va_list args);
 extern int kfunc_def(sscanf)(const char *buf, const char *fmt, ...);
 extern int kfunc_def(vsscanf)(const char *buf, const char *fmt, va_list args);
 
-extern void kfunc_def(kernel_neon_begin)(void);
-extern void kfunc_def(kernel_neon_end)(void);
-
 #define sprintf(buf, fmt, ...) kfunc(sprintf)(buf, fmt, ##__VA_ARGS__)
 #define snprintf(buf, size, fmt, ...) kfunc(snprintf)(buf, size, fmt, ##__VA_ARGS__)
 #define scnprintf(buf, size, fmt, ...) kfunc(scnprintf)(buf, size, fmt, ##__VA_ARGS__)

@@ -9,7 +9,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <ksyms.h>
-#include <linux/kernel.h>
+
+extern void kfunc_def(kernel_neon_begin)(void);
+extern void kfunc_def(kernel_neon_end)(void);
 
 #define VERSION(major, minor, patch) (((major) << 16) + ((minor) << 8) + (patch))
 
