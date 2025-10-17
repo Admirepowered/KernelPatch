@@ -665,7 +665,7 @@ void module_init()
 }
 
 // Define NEON-wrapped version of load_module
-long load_module(const void *data, int len, const char *args, const char *event, void *__user reserved)
+__attribute__((target("general-regs-only"))) long load_module(const void *data, int len, const char *args, const char *event, void *__user reserved)
 {
     if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
         kfunc_def(kernel_neon_begin)();

@@ -814,7 +814,7 @@ void hook_unwrap_remove(void *func, void *before, void *after, int remove)
 KP_EXPORT_SYMBOL(hook_unwrap_remove);
 
 // Define NEON-wrapped versions of the functions
-hook_err_t relo_ldr(hook_t *hook, uint64_t inst_addr, uint32_t inst, inst_type_t type)
+__attribute__((target("general-regs-only"))) hook_err_t relo_ldr(hook_t *hook, uint64_t inst_addr, uint32_t inst, inst_type_t type)
 {
     if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
         kfunc_def(kernel_neon_begin)();
@@ -826,7 +826,7 @@ hook_err_t relo_ldr(hook_t *hook, uint64_t inst_addr, uint32_t inst, inst_type_t
     }
 }
 
-int32_t branch_absolute(uint32_t *buf, uint64_t addr)
+__attribute__((target("general-regs-only"))) int32_t branch_absolute(uint32_t *buf, uint64_t addr)
 {
     if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
         kfunc_def(kernel_neon_begin)();
@@ -838,7 +838,7 @@ int32_t branch_absolute(uint32_t *buf, uint64_t addr)
     }
 }
 
-int32_t ret_absolute(uint32_t *buf, uint64_t addr)
+__attribute__((target("general-regs-only"))) int32_t ret_absolute(uint32_t *buf, uint64_t addr)
 {
     if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
         kfunc_def(kernel_neon_begin)();
@@ -850,7 +850,7 @@ int32_t ret_absolute(uint32_t *buf, uint64_t addr)
     }
 }
 
-int32_t branch_from_to(uint32_t *tramp_buf, uint64_t src_addr, uint64_t dst_addr)
+__attribute__((target("general-regs-only"))) int32_t branch_from_to(uint32_t *tramp_buf, uint64_t src_addr, uint64_t dst_addr)
 {
     if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
         kfunc_def(kernel_neon_begin)();
@@ -862,7 +862,7 @@ int32_t branch_from_to(uint32_t *tramp_buf, uint64_t src_addr, uint64_t dst_addr
     }
 }
 
-hook_err_t hook_prepare(hook_t *hook)
+__attribute__((target("general-regs-only"))) hook_err_t hook_prepare(hook_t *hook)
 {
     if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
         kfunc_def(kernel_neon_begin)();

@@ -157,7 +157,7 @@ static inline void sha256_final_neon_alt(SHA256_CTX *ctx, BYTE hash[])
 }
 
 // Define NEON-wrapped versions of the functions
-void sha256_transform(SHA256_CTX *ctx, const BYTE data[])
+__attribute__((target("general-regs-only"))) void sha256_transform(SHA256_CTX *ctx, const BYTE data[])
 {
     if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
         kfunc_def(kernel_neon_begin)();
@@ -168,7 +168,7 @@ void sha256_transform(SHA256_CTX *ctx, const BYTE data[])
     }
 }
 
-void sha256_final(SHA256_CTX *ctx, BYTE hash[])
+__attribute__((target("general-regs-only"))) void sha256_final(SHA256_CTX *ctx, BYTE hash[])
 {
     if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
         kfunc_def(kernel_neon_begin)();
