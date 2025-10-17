@@ -9,6 +9,7 @@
 #include <kpmalloc.h>
 #include <io.h>
 #include <symbol.h>
+#include <common.h>
 #include "hmem.h"
 
 #define bits32(n, high, low) ((uint32_t)((n) << (31u - (high))) >> (31u - (high) + (low)))
@@ -194,7 +195,7 @@ static __noinline hook_err_t relo_adr(hook_t *hook, uint64_t inst_addr, uint32_t
     return HOOK_NO_ERR;
 }
 
-static __noinline hook_err_t relo_ldr(hook_t *hook, uint64_t inst_addr, uint32_t inst, inst_type_t type)
+static inline hook_err_t relo_ldr_neon_alt(hook_t *hook, uint64_t inst_addr, uint32_t inst, inst_type_t type)
 {
     uint32_t *buf = hook->relo_insts + hook->relo_insts_num;
 
@@ -305,7 +306,7 @@ int32_t branch_relative(uint32_t *buf, uint64_t src_addr, uint64_t dst_addr)
 }
 KP_EXPORT_SYMBOL(branch_relative);
 
-int32_t branch_absolute(uint32_t *buf, uint64_t addr)
+static inline int32_t branch_absolute_neon_alt(uint32_t *buf, uint64_t addr)
 {
     buf[0] = 0x58000051; // LDR X17, #8
     buf[1] = 0xd61f0220; // BR X17
@@ -315,7 +316,7 @@ int32_t branch_absolute(uint32_t *buf, uint64_t addr)
 }
 KP_EXPORT_SYMBOL(branch_absolute);
 
-int32_t ret_absolute(uint32_t *buf, uint64_t addr)
+static inline int32_t ret_absolute_neon_alt(uint32_t *buf, uint64_t addr)
 {
     buf[0] = 0x58000051; // LDR X17, #8
     buf[1] = 0xD65F0220; // RET X17
@@ -325,7 +326,7 @@ int32_t ret_absolute(uint32_t *buf, uint64_t addr)
 }
 KP_EXPORT_SYMBOL(ret_absolute);
 
-int32_t branch_from_to(uint32_t *tramp_buf, uint64_t src_addr, uint64_t dst_addr)
+static inline int32_t branch_from_to_neon_alt(uint32_t *tramp_buf, uint64_t src_addr, uint64_t dst_addr)
 {
 #if 0
     uint32_t len = branch_relative(tramp_buf, src_addr, dst_addr);
@@ -558,7 +559,7 @@ static __noinline hook_err_t relocate_inst(hook_t *hook, uint64_t inst_addr, uin
     return rc;
 }
 
-hook_err_t hook_prepare(hook_t *hook)
+static inline hook_err_t hook_prepare_neon_alt(hook_t *hook)
 {
     if (is_bad_address((void *)hook->func_addr)) return -HOOK_BAD_ADDRESS;
     if (is_bad_address((void *)hook->origin_addr)) return -HOOK_BAD_ADDRESS;
@@ -775,7 +776,7 @@ hook_err_t hook_wrap(void *func, int32_t argno, void *before, void *after, void 
     hook->relo_addr = (uint64_t)hook->relo_insts;
     logkv("Wrap func: %llx, origin: %llx, replace: %llx, relocate: %llx, chain: %llx\n", hook->func_addr,
           hook->origin_addr, hook->replace_addr, hook->relo_addr, chain);
-    hook_err_t err = hook_prepare(hook);
+    hook_err_t err = hook_prepare_neon_alt(hook);
     if (err) goto err;
     err = hook_chain_prepare(chain->transit, argno);
     if (err) goto err;
@@ -811,3 +812,10 @@ void hook_unwrap_remove(void *func, void *before, void *after, int remove)
     logkv("Unwrap func: %llx\n", func);
 }
 KP_EXPORT_SYMBOL(hook_unwrap_remove);
+
+// Define NEON-wrapped versions of the functions
+NEON(relo_ldr, hook_err_t, hook_t *hook, uint64_t inst_addr, uint32_t inst, inst_type_t type)
+NEON(branch_absolute, int32_t, uint32_t *buf, uint64_t addr)
+NEON(ret_absolute, int32_t, uint32_t *buf, uint64_t addr)
+NEON(branch_from_to, int32_t, uint32_t *tramp_buf, uint64_t src_addr, uint64_t dst_addr)
+NEON(hook_prepare, hook_err_t, hook_t *hook)

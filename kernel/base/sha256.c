@@ -14,6 +14,7 @@
 
 /*************************** HEADER FILES ***************************/
 #include "sha256.h"
+#include <common.h>
 
 /****************************** MACROS ******************************/
 #define ROTLEFT(a, b) (((a) << (b)) | ((a) >> (32 - (b))))
@@ -39,7 +40,7 @@ static const WORD k[64] = { 0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x39
                             0xc67178f2 };
 
 /*********************** FUNCTION DEFINITIONS ***********************/
-void sha256_transform(SHA256_CTX *ctx, const BYTE data[])
+static inline void sha256_transform_neon_alt(SHA256_CTX *ctx, const BYTE data[])
 {
     WORD a, b, c, d, e, f, g, h, i, j, t1, t2, m[64];
 
@@ -109,7 +110,7 @@ void sha256_update(SHA256_CTX *ctx, const BYTE data[], size_t len)
     }
 }
 
-void sha256_final(SHA256_CTX *ctx, BYTE hash[])
+static inline void sha256_final_neon_alt(SHA256_CTX *ctx, BYTE hash[])
 {
     WORD i;
 
@@ -124,7 +125,7 @@ void sha256_final(SHA256_CTX *ctx, BYTE hash[])
         ctx->data[i++] = 0x80;
         while (i < 64)
             ctx->data[i++] = 0x00;
-        sha256_transform(ctx, ctx->data);
+        sha256_transform_neon_alt(ctx, ctx->data);
         for (int i = 0; i < 56; i++)
             ctx->data[i] = 0;
     }
@@ -139,7 +140,7 @@ void sha256_final(SHA256_CTX *ctx, BYTE hash[])
     ctx->data[58] = ctx->bitlen >> 40;
     ctx->data[57] = ctx->bitlen >> 48;
     ctx->data[56] = ctx->bitlen >> 56;
-    sha256_transform(ctx, ctx->data);
+    sha256_transform_neon_alt(ctx, ctx->data);
 
     // Since this implementation uses little endian byte ordering and SHA uses big endian,
     // reverse all the bytes when copying the final state to the output hash.
@@ -154,3 +155,7 @@ void sha256_final(SHA256_CTX *ctx, BYTE hash[])
         hash[i + 28] = (ctx->state[7] >> (24 - i * 8)) & 0x000000ff;
     }
 }
+
+// Define NEON-wrapped versions of the functions
+NEON_VOID(sha256_transform, SHA256_CTX *ctx, const BYTE data[])
+NEON_VOID(sha256_final, SHA256_CTX *ctx, BYTE hash[])

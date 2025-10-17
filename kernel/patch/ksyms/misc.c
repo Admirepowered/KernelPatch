@@ -838,6 +838,16 @@ static void _linux_sched_mm_init(const char *name, unsigned long addr)
     kfunc_match(get_task_mm, name, addr);
 }
 
+// arch/arm64/kernel/fpsimd.c - ARM64 NEON/SIMD support
+void kfunc_def(kernel_neon_begin)(void) = 0;
+void kfunc_def(kernel_neon_end)(void) = 0;
+
+static void _linux_arm64_fpsimd_init(const char *name, unsigned long addr)
+{
+    kfunc_match(kernel_neon_begin, name, addr);
+    kfunc_match(kernel_neon_end, name, addr);
+}
+
 static int _linux_misc_symbol_init(void *data, const char *name, struct module *m, unsigned long addr)
 {
     _linux_kernel_cred_sym_match(name, addr);
@@ -856,6 +866,7 @@ static int _linux_misc_symbol_init(void *data, const char *name, struct module *
     _linux_rcu_symbol_init(name, addr);
     _linux_seccomp_sym_match(name, addr);
     _linux_sched_mm_init(name, addr);
+    _linux_arm64_fpsimd_init(name, addr);
     return 0;
 }
 
