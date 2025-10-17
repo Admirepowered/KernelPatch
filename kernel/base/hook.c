@@ -814,8 +814,62 @@ void hook_unwrap_remove(void *func, void *before, void *after, int remove)
 KP_EXPORT_SYMBOL(hook_unwrap_remove);
 
 // Define NEON-wrapped versions of the functions
-NEON(relo_ldr, hook_err_t, hook_t *hook, uint64_t inst_addr, uint32_t inst, inst_type_t type)
-NEON(branch_absolute, int32_t, uint32_t *buf, uint64_t addr)
-NEON(ret_absolute, int32_t, uint32_t *buf, uint64_t addr)
-NEON(branch_from_to, int32_t, uint32_t *tramp_buf, uint64_t src_addr, uint64_t dst_addr)
-NEON(hook_prepare, hook_err_t, hook_t *hook)
+hook_err_t relo_ldr(hook_t *hook, uint64_t inst_addr, uint32_t inst, inst_type_t type)
+{
+    if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
+        kfunc_def(kernel_neon_begin)();
+        hook_err_t result = relo_ldr_neon_alt(hook, inst_addr, inst, type);
+        kfunc_def(kernel_neon_end)();
+        return result;
+    } else {
+        return relo_ldr_neon_alt(hook, inst_addr, inst, type);
+    }
+}
+
+int32_t branch_absolute(uint32_t *buf, uint64_t addr)
+{
+    if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
+        kfunc_def(kernel_neon_begin)();
+        int32_t result = branch_absolute_neon_alt(buf, addr);
+        kfunc_def(kernel_neon_end)();
+        return result;
+    } else {
+        return branch_absolute_neon_alt(buf, addr);
+    }
+}
+
+int32_t ret_absolute(uint32_t *buf, uint64_t addr)
+{
+    if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
+        kfunc_def(kernel_neon_begin)();
+        int32_t result = ret_absolute_neon_alt(buf, addr);
+        kfunc_def(kernel_neon_end)();
+        return result;
+    } else {
+        return ret_absolute_neon_alt(buf, addr);
+    }
+}
+
+int32_t branch_from_to(uint32_t *tramp_buf, uint64_t src_addr, uint64_t dst_addr)
+{
+    if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
+        kfunc_def(kernel_neon_begin)();
+        int32_t result = branch_from_to_neon_alt(tramp_buf, src_addr, dst_addr);
+        kfunc_def(kernel_neon_end)();
+        return result;
+    } else {
+        return branch_from_to_neon_alt(tramp_buf, src_addr, dst_addr);
+    }
+}
+
+hook_err_t hook_prepare(hook_t *hook)
+{
+    if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
+        kfunc_def(kernel_neon_begin)();
+        hook_err_t result = hook_prepare_neon_alt(hook);
+        kfunc_def(kernel_neon_end)();
+        return result;
+    } else {
+        return hook_prepare_neon_alt(hook);
+    }
+}

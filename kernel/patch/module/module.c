@@ -395,7 +395,7 @@ static int elf_header_check(struct load_info *info)
 struct module modules = { 0 };
 static spinlock_t module_lock;
 
-long load_module(const void *data, int len, const char *args, const char *event, void *__user reserved)
+static inline long load_module_neon_alt(const void *data, int len, const char *args, const char *event, void *__user reserved)
 {
     struct load_info load_info = { .len = len, .hdr = data };
     struct load_info *info = &load_info;
@@ -662,4 +662,17 @@ void module_init()
 {
     INIT_LIST_HEAD(&modules.list);
     spin_lock_init(&module_lock);
+}
+
+// Define NEON-wrapped version of load_module
+long load_module(const void *data, int len, const char *args, const char *event, void *__user reserved)
+{
+    if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
+        kfunc_def(kernel_neon_begin)();
+        long result = load_module_neon_alt(data, len, args, event, reserved);
+        kfunc_def(kernel_neon_end)();
+        return result;
+    } else {
+        return load_module_neon_alt(data, len, args, event, reserved);
+    }
 }

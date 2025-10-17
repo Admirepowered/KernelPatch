@@ -157,5 +157,24 @@ static inline void sha256_final_neon_alt(SHA256_CTX *ctx, BYTE hash[])
 }
 
 // Define NEON-wrapped versions of the functions
-NEON_VOID(sha256_transform, SHA256_CTX *ctx, const BYTE data[])
-NEON_VOID(sha256_final, SHA256_CTX *ctx, BYTE hash[])
+void sha256_transform(SHA256_CTX *ctx, const BYTE data[])
+{
+    if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
+        kfunc_def(kernel_neon_begin)();
+        sha256_transform_neon_alt(ctx, data);
+        kfunc_def(kernel_neon_end)();
+    } else {
+        sha256_transform_neon_alt(ctx, data);
+    }
+}
+
+void sha256_final(SHA256_CTX *ctx, BYTE hash[])
+{
+    if (kfunc_def(kernel_neon_begin) && kfunc_def(kernel_neon_end)) {
+        kfunc_def(kernel_neon_begin)();
+        sha256_final_neon_alt(ctx, hash);
+        kfunc_def(kernel_neon_end)();
+    } else {
+        sha256_final_neon_alt(ctx, hash);
+    }
+}
