@@ -7,6 +7,88 @@
 #include "./setup.h"
 #include "./start.h"
 
+#define UART_BASE   0x09000000
+#define UART_DR     0x00     // Data Register
+#define UART_FR     0x18     // Flag Register
+#define UART_FR_TXFF (1 << 5) // Transmit FIFO Full flag 
+
+.text
+.align 2
+.type putc_uart, %function
+putc_uart:
+    // x0 = char
+    // x1 = UART base
+
+.Lwait_tx:
+    ldr w2, [x1, #UART_FR]      
+    tst w2, #UART_FR_TXFF      
+    b.ne .Lwait_tx              
+    
+    strb w0, [x1, #UART_DR]     
+    ret
+
+.text
+.align 2
+.type print_str_uart, %function
+print_str_uart:
+
+    stp x19, x20, [sp, #-16]!
+    stp x29, x30, [sp, #-16]!
+
+    mov x19, x1                
+    mov x29, sp                
+
+.Lprint_loop:
+    ldrb w20, [x0], #1          
+    cbz w20, .Lprint_end        
+
+    mov x1, x19                 
+    mov w0, w20                 
+    bl putc_uart                
+    b .Lprint_loop              
+
+.Lprint_end:
+    ldp x29, x30, [sp], #16     
+    ldp x19, x20, [sp], #16
+    ret
+.text
+.align 2
+.type print_hex_reg, %function
+print_hex_reg:
+
+    stp x18, x19, [sp, #-16]!
+    stp x20, x21, [sp, #-16]!
+    stp x29, x30, [sp, #-16]! 
+
+    mov x19, x0                 
+    mov x20, x1                 
+    mov x18, #16               
+    mov x29, sp
+
+.Lhex_loop:
+    subs x18, x18, #1           
+    lsl x21, x18, #2            
+    lsr x22, x19, x21           
+    and x22, x22, #0xf          
+
+    cmp x22, #9
+    ble .Ldigit
+    add x0, x22, #'a' - 10      // 10-15 -> 'a'-'f' (x0 Caller-saved)
+    b .Lprint
+.Ldigit:
+    add x0, x22, #'0'           // 0-9 -> '0'-'9'
+.Lprint:
+    mov x1, x20                 
+    bl putc_uart                
+
+    cbnz x18, .Lhex_loop        
+    ldp x29, x30, [sp], #16     
+    ldp x20, x21, [sp], #16
+    ldp x18, x19, [sp], #16
+    ret
+
+
+
 .text
 .align 2
 .type memcpy8, %function
@@ -312,6 +394,56 @@ setup:
     ldr x11, [x10, #setup_setup_offset_offset]
     sub x12, x9, x11
     mov x19, x12
+
+
+    // print x19
+    mov x0, x19                         
+    mov x1, #UART_BASE                  // x1 = UART base
+    bl print_hex_reg
+
+    // print \n
+    mov w0, #'\n'
+    mov x1, #UART_BASE
+    bl putc_uart
+
+
+    ldr x17, [x10, #map_paging_init_relo_offset] // x17 = paging_init_relo
+    add x17, x19, x17                           // x17 = paging_init_pa
+
+    
+    // print x17
+    mov x0, x17                         // x0 = paging_init_pa
+    mov x1, #UART_BASE
+    bl print_hex_reg
+
+ 
+    mov w0, #'\n'
+    mov x1, #UART_BASE
+    bl putc_uart
+
+    // ===============================================
+    // !!! print _Paging Init VA (x18) !!!
+    // ===============================================
+    
+    // find _paging_init  VA
+    adrp x18, _paging_init
+    add x18, x18, :lo12:_paging_init    
+
+    
+    // print x18
+    mov x0, x18                         // x0 = _paging_init_va
+    mov x1, #UART_BASE
+    bl print_hex_reg
+
+    mov w0, #'\n'
+    mov x1, #UART_BASE
+    bl putc_uart
+
+    // ===============================================
+    // !!! end debug staring 
+    // ===============
+    
+
 
     mov x0, x19
     bl start_prepare
