@@ -4,8 +4,18 @@
 #include <ktypes.h>
 #include <ksyms.h>
 
+#include <linux/sched.h>
+typedef unsigned long mm_segment_t;
+#ifndef __HAVE_ARCH_THREAD_INFO
+struct thread_info {
+    unsigned long flags;        
+    mm_segment_t addr_limit;    
+};
+#endif
 #define get_fs() (current_thread_info()->addr_limit)
-
+static inline void set_fs(mm_segment_t fs) {
+            current_thread_info()->addr_limit = fs;
+}
 // todo:
 // probe_user_write
 // unsigned long __must_check copy_from_user(void *to, const void __user *from, unsigned long n);
