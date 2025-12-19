@@ -7,10 +7,51 @@
 #include <linux/sched/task.h>
 #include <linux/cred.h>
 #include <linux/capability.h>
+#include <linux/fs.h>
+#include <linux/uaccess.h>
+#include <linux/slab.h>
 #include <syscall.h>
 #include <module.h>
 #include <predata.h>
 #include <linux/string.h>
+
+#ifndef GFP_ATOMIC
+#define __GFP_HIGH      0x20u
+#define __GFP_ATOMIC    0x80u
+#define __GFP_KSWAPD_RECLAIM 0x0u
+#define GFP_ATOMIC      (__GFP_HIGH | __GFP_ATOMIC | __GFP_KSWAPD_RECLAIM)
+#endif
+#define KERNEL_DS (-1UL)
+
+#define LOG_FILE_PATH "/data/adb/ap/log/kernel.log"
+#define DMESG_BUF_SIZE (128 * 1024)
+typedef unsigned long mm_segment_t;
+typedef int (*do_syslog_t)(int type, char __user *buf, int len);
+
+static loff_t kernel_write_file(const char *path, const void *data, loff_t len, umode_t mode)
+{
+    loff_t off = 0;
+    set_priv_sel_allow(current, true);
+
+    struct file *fp = filp_open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    if (!fp || IS_ERR(fp)) {
+        log_boot("create file %s error: %d\n", path, PTR_ERR(fp));
+        goto out;
+    }
+    kernel_write(fp, data, len, &off);
+    if (off != len) {
+        log_boot("write file %s error: %x\n", path, off);
+        goto free;
+    }
+
+free:
+    filp_close(fp, 0);
+
+out:
+    set_priv_sel_allow(current, false);
+    return off;
+}
+
 
 void print_bootlog()
 {
@@ -35,6 +76,40 @@ void before_panic(hook_fargs12_t *args, void *udata)
 {
     printk("==== Start KernelPatch for Kernel panic ====\n");
     print_bootlog();
+    #ifdef ANDROID
+    do_syslog_t do_syslog_ptr; 
+    char *log_buf;
+    int len;
+    do_syslog_ptr = (do_syslog_t)kallsyms_lookup_name("do_syslog");
+    
+    if (!do_syslog_ptr) {
+        printk("KernelPatch: do_syslog symbol not found, cannot dump dmesg.\n");
+        return;
+    }
+    log_buf = kmalloc(DMESG_BUF_SIZE, GFP_ATOMIC);
+    if (!log_buf) {
+        printk("KernelPatch: Failed to allocate memory for dmesg dump.\n");
+        return;
+    }
+    if (kver < VERSION(5, 10, 0)){
+        mm_segment_t old_fs = get_fs();
+        set_fs(KERNEL_DS);
+        len = do_syslog_ptr(3, log_buf, DMESG_BUF_SIZE);
+        set_fs(old_fs);
+    }
+    else {
+        len = do_syslog_ptr(3, log_buf, DMESG_BUF_SIZE);
+    }
+
+
+    if (len > 0) {
+        kernel_write_file(LOG_FILE_PATH, log_buf, len, 0644);
+        printk("KernelPatch: Saved %d bytes of dmesg to %s\n", len, LOG_FILE_PATH);
+    } else {
+        printk("KernelPatch: do_syslog returned %d\n", len);
+    }
+    kfree(log_buf);
+    #endif
     printk("==== End KernelPatch for Kernel panic ====\n");
 }
 
