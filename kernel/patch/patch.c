@@ -14,44 +14,184 @@
 #include <module.h>
 #include <predata.h>
 #include <linux/string.h>
-
-#ifndef GFP_ATOMIC
-#define __GFP_HIGH      0x20u
-#define __GFP_ATOMIC    0x80u
-#define __GFP_KSWAPD_RECLAIM 0x0u
-#define GFP_ATOMIC      (__GFP_HIGH | __GFP_ATOMIC | __GFP_KSWAPD_RECLAIM)
-#endif
-#define KERNEL_DS (-1UL)
+#include <linux/kernel.h>  
 
 #define LOG_FILE_PATH "/data/adb/ap/log/kernel.log"
-#define DMESG_BUF_SIZE (128 * 1024)
-typedef unsigned long mm_segment_t;
-typedef int (*do_syslog_t)(int type, char __user *buf, int len);
+#define PANIC_LOG_PATH "/data/adb/ap/log/panic.log"
+
+
+#ifndef O_WRONLY
+#define O_WRONLY  00000001
+#endif
+#ifndef O_CREAT
+#define O_CREAT   00000100
+#endif
+#ifndef O_TRUNC
+#define O_TRUNC   00001000
+#endif
+#ifndef O_APPEND
+#define O_APPEND  00002000
+#endif
+
+
+enum kmsg_dump_reason {
+    KMSG_DUMP_UNDEF,
+    KMSG_DUMP_PANIC,
+    KMSG_DUMP_OOPS,
+    KMSG_DUMP_EMERG,
+    KMSG_DUMP_RESTART,
+    KMSG_DUMP_HALT,
+    KMSG_DUMP_POWEROFF,
+    KMSG_DUMP_SOFT_REBOOT,
+};
+
+
+struct kmsg_dumper {
+    struct list_head list;
+    int registered;
+    void (*dump)(struct kmsg_dumper *, enum kmsg_dump_reason);
+    enum kmsg_dump_reason max_reason;
+    u32 cur_idx;
+    u32 next_idx;
+    u64 cur_seq;
+    u64 next_seq;
+    bool active;
+    bool sync;
+};
+
+
+typedef int (*kmsg_dump_register_t)(struct kmsg_dumper *dumper);
+typedef int (*kmsg_dump_unregister_t)(struct kmsg_dumper *dumper);
+typedef void (*kmsg_dump_rewind_t)(void *iter);
+typedef bool (*kmsg_dump_get_line_t)(void *iter, bool syslog, char *line, size_t size, size_t *len);
+
+
+static struct kmsg_dumper kernelpatch_dumper;
+static kmsg_dump_register_t kmsg_dump_register_fn = NULL;
+static kmsg_dump_unregister_t kmsg_dump_unregister_fn = NULL;
+static kmsg_dump_rewind_t kmsg_dump_rewind_fn = NULL;
+static kmsg_dump_get_line_t kmsg_dump_get_line_fn = NULL;
+static bool kmsg_dump_registered = false;
+
+
+static int simple_snprintf(char *buf, size_t size, const char *fmt, ...)
+{
+    int i = 0;
+    
+
+    if (strstr(fmt, "%llu")) {
+
+        unsigned long long value = 0;
+        char num_buf[20];
+        char *p = num_buf;
+        
+
+        while (i < size - 1) {
+            if (*fmt == '%') {
+                fmt += 4; 
+                while (value > 0 && i < size - 1) {
+                    buf[i++] = '0' + (value % 10);
+                    value /= 10;
+                }
+                if (i == 0 && i < size - 1) {
+                    buf[i++] = '0';
+                }
+            } else if (i < size - 1) {
+                buf[i++] = *fmt++;
+            } else {
+                break;
+            }
+        }
+    } else {
+
+        while (*fmt && i < size - 1) {
+            buf[i++] = *fmt++;
+        }
+    }
+    
+    if (i < size) {
+        buf[i] = '\0';
+    } else if (size > 0) {
+        buf[size - 1] = '\0';
+    }
+    
+    return i;
+}
+
+
+static int get_current_cpu_id(void)
+{
+
+    unsigned int (*get_cpu_id_fn)(void);
+    
+    get_cpu_id_fn = (unsigned int (*)(void))kallsyms_lookup_name("smp_processor_id");
+    if (get_cpu_id_fn) {
+        return get_cpu_id_fn();
+    }
+    
+    get_cpu_id_fn = (unsigned int (*)(void))kallsyms_lookup_name("raw_smp_processor_id");
+    if (get_cpu_id_fn) {
+        return get_cpu_id_fn();
+    }
+    
+    return 0; 
+}
+
 
 static loff_t kernel_write_file(const char *path, const void *data, loff_t len, umode_t mode)
 {
     loff_t off = 0;
-    set_priv_sel_allow(current, true);
-
-    struct file *fp = filp_open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
+    struct file *(*filp_open_fn)(const char *, int, umode_t);
+    int (*filp_close_fn)(struct file *, void *);
+    ssize_t (*kernel_write_fn)(struct file *, const void *, size_t, loff_t *);
+    
+    filp_open_fn = (struct file *(*)(const char *, int, umode_t))kallsyms_lookup_name("filp_open");
+    if (!filp_open_fn) return -1;
+    
+    filp_close_fn = (int (*)(struct file *, void *))kallsyms_lookup_name("filp_close");
+    if (!filp_close_fn) return -1;
+    
+    kernel_write_fn = (ssize_t (*)(struct file *, const void *, size_t, loff_t *))kallsyms_lookup_name("kernel_write");
+    if (!kernel_write_fn) return -1;
+    
+    struct file *fp = filp_open_fn(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
     if (!fp || IS_ERR(fp)) {
-        printk("create file %s error: %d\n", path, PTR_ERR(fp));
-        goto out;
+        return -1;
     }
-    kernel_write(fp, data, len, &off);
-    if (off != len) {
-        printk("write file %s error: %x\n", path, off);
-        goto free;
-    }
-
-free:
-    filp_close(fp, 0);
-
-out:
-    set_priv_sel_allow(current, false);
+    
+    kernel_write_fn(fp, data, len, &off);
+    filp_close_fn(fp, 0);
+    
     return off;
 }
 
+
+static int append_to_file(const char *path, const char *data, size_t len)
+{
+    struct file *(*filp_open_fn)(const char *, int, umode_t);
+    int (*filp_close_fn)(struct file *, void *);
+    ssize_t (*kernel_write_fn)(struct file *, const void *, size_t, loff_t *);
+    
+    filp_open_fn = (struct file *(*)(const char *, int, umode_t))kallsyms_lookup_name("filp_open");
+    if (!filp_open_fn) return -1;
+    
+    filp_close_fn = (int (*)(struct file *, void *))kallsyms_lookup_name("filp_close");
+    if (!filp_close_fn) return -1;
+    
+    kernel_write_fn = (ssize_t (*)(struct file *, const void *, size_t, loff_t *))kallsyms_lookup_name("kernel_write");
+    if (!kernel_write_fn) return -1;
+    
+    struct file *fp = filp_open_fn(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (!fp || IS_ERR(fp)) {
+        return -1;
+    }
+    
+    loff_t pos = 0;
+    kernel_write_fn(fp, data, len, &pos);
+    filp_close_fn(fp, 0);
+    
+    return 0;
+}
 
 void print_bootlog()
 {
@@ -72,73 +212,238 @@ void print_bootlog()
     }
 }
 
-static void print_dmesg(void)
+static void save_via_kmsg_dump(void)
 {
-    char *buf = (char *)kallsyms_lookup_name("log_buf");
-    printk("1");
-    unsigned int len = *(unsigned int *)kallsyms_lookup_name("log_buf_len");
-    printk("2");
-    unsigned int idx = *(unsigned int *)kallsyms_lookup_name("log_buf_idx");
-    printk("3");
-    unsigned int i;
-    printk("buf=%px, len=%u, idx=%u\n", buf, len, idx);
-    if (!buf) return;
-
-    for (i = 0; i < len; i++) {
-        char c = buf[(idx + i) % len];
-        printk("%c", c); // 输出到 earlycon
+    if (!kmsg_dump_rewind_fn || !kmsg_dump_get_line_fn) {
+        return;
     }
+
+    void *(*kmalloc_fn)(size_t, unsigned int) = (void *(*)(size_t, unsigned int))kallsyms_lookup_name("kmalloc");
+    void (*kfree_fn)(const void *) = (void (*)(const void *))kallsyms_lookup_name("kfree");
+    
+    if (!kmalloc_fn || !kfree_fn) {
+        return;
+    }
+    
+
+    void *iter = kmalloc_fn(64, 0x20u); // GFP_ATOMIC
+    if (!iter) {
+        return;
+    }
+    
+    char line[1024];
+    size_t len;
+    
+
+    kmsg_dump_rewind_fn(iter);
+    
+
+    while (kmsg_dump_get_line_fn(iter, true, line, sizeof(line), &len)) {
+        if (len > 0) {
+            append_to_file(PANIC_LOG_PATH, line, len);
+        }
+    }
+    
+    kfree_fn(iter);
+}
+
+static void kernelpatch_dump_handler(struct kmsg_dumper *dumper, enum kmsg_dump_reason reason)
+{
+    printk("KernelPatch: kmsg_dump handler called (reason: %d)\n", reason);
+    
+
+    char timestamp[64];
+    unsigned long long (*ktime_get_real_seconds_fn)(void) = (unsigned long long (*)(void))kallsyms_lookup_name("ktime_get_real_seconds");
+    
+    if (ktime_get_real_seconds_fn) {
+        unsigned long long ts = ktime_get_real_seconds_fn();
+        char ts_str[20];
+        char *p = ts_str;
+        unsigned long long tmp = ts;
+        
+
+        do {
+            *p++ = '0' + (tmp % 10);
+            tmp /= 10;
+        } while (tmp);
+        *p = '\0';
+        
+
+        int len = p - ts_str;
+        for (int i = 0; i < len / 2; i++) {
+            char t = ts_str[i];
+            ts_str[i] = ts_str[len - 1 - i];
+            ts_str[len - 1 - i] = t;
+        }
+        
+
+        const char *prefix = "\n=== Panic at ";
+        const char *suffix = " ===\n";
+        
+        char *dest = timestamp;
+        while (*prefix && dest < timestamp + sizeof(timestamp) - 1) {
+            *dest++ = *prefix++;
+        }
+        
+        p = ts_str;
+        while (*p && dest < timestamp + sizeof(timestamp) - 1) {
+            *dest++ = *p++;
+        }
+        
+        p = (char *)suffix;
+        while (*p && dest < timestamp + sizeof(timestamp) - 1) {
+            *dest++ = *p++;
+        }
+        *dest = '\0';
+        
+        append_to_file(PANIC_LOG_PATH, timestamp, dest - timestamp);
+    } else {
+
+        append_to_file(PANIC_LOG_PATH, "\n=== Kernel Panic ===\n", 22);
+    }
+    
+
+    save_via_kmsg_dump();
+    
+
+    if (current) {
+        char info[128];
+        unsigned int (*task_pid_nr_fn)(struct task_struct *) = (unsigned int (*)(struct task_struct *))kallsyms_lookup_name("task_pid_nr");
+        char *(*get_task_comm_fn)(char *, struct task_struct *) = (char *(*)(char *, struct task_struct *))kallsyms_lookup_name("get_task_comm");
+        
+        if (task_pid_nr_fn && get_task_comm_fn) {
+            char comm[16];
+            get_task_comm_fn(comm, current);
+            unsigned int pid = task_pid_nr_fn(current);
+            int cpu_id = get_current_cpu_id();
+            
+ 
+            char *p = info;
+            const char *pid_str = "PID: ";
+            const char *cpu_str = ", CPU: ";
+            const char *comm_str = ", Comm: ";
+            const char *newline = "\n";
+            
+
+            strcpy(p, pid_str); p += strlen(pid_str);
+            
+ 
+            char pid_buf[10];
+            char *pid_p = pid_buf;
+            unsigned int pid_tmp = pid;
+            do {
+                *pid_p++ = '0' + (pid_tmp % 10);
+                pid_tmp /= 10;
+            } while (pid_tmp);
+            *pid_p = '\0';
+            
+  
+            int pid_len = pid_p - pid_buf;
+            for (int i = 0; i < pid_len / 2; i++) {
+                char t = pid_buf[i];
+                pid_buf[i] = pid_buf[pid_len - 1 - i];
+                pid_buf[pid_len - 1 - i] = t;
+            }
+            
+            strcpy(p, pid_buf); p += pid_len;
+            strcpy(p, cpu_str); p += strlen(cpu_str);
+            
+ 
+            char cpu_buf[10];
+            char *cpu_p = cpu_buf;
+            int cpu_tmp = cpu_id;
+            do {
+                *cpu_p++ = '0' + (cpu_tmp % 10);
+                cpu_tmp /= 10;
+            } while (cpu_tmp);
+            *cpu_p = '\0';
+            
+
+            int cpu_len = cpu_p - cpu_buf;
+            for (int i = 0; i < cpu_len / 2; i++) {
+                char t = cpu_buf[i];
+                cpu_buf[i] = cpu_buf[cpu_len - 1 - i];
+                cpu_buf[cpu_len - 1 - i] = t;
+            }
+            
+            strcpy(p, cpu_buf); p += cpu_len;
+            strcpy(p, comm_str); p += strlen(comm_str);
+            strcpy(p, comm); p += strlen(comm);
+            strcpy(p, newline); p += strlen(newline);
+            *p = '\0';
+            
+            append_to_file(PANIC_LOG_PATH, info, p - info);
+        }
+    }
+}
+
+
+static int init_kmsg_dump(void)
+{
+    kmsg_dump_register_fn = (kmsg_dump_register_t)kallsyms_lookup_name("kmsg_dump_register");
+    kmsg_dump_unregister_fn = (kmsg_dump_unregister_t)kallsyms_lookup_name("kmsg_dump_unregister");
+    kmsg_dump_rewind_fn = (kmsg_dump_rewind_t)kallsyms_lookup_name("kmsg_dump_rewind");
+    kmsg_dump_get_line_fn = (kmsg_dump_get_line_t)kallsyms_lookup_name("kmsg_dump_get_line");
+    
+    if (!kmsg_dump_register_fn) {
+        log_boot("kmsg_dump_register not found\n");
+        return -ENOENT;
+    }
+    
+    memset(&kernelpatch_dumper, 0, sizeof(kernelpatch_dumper));
+    
+    kernelpatch_dumper.dump = kernelpatch_dump_handler;
+    kernelpatch_dumper.max_reason = KMSG_DUMP_PANIC;
+    
+
+    int ret = kmsg_dump_register_fn(&kernelpatch_dumper);
+    if (ret == 0) {
+        kmsg_dump_registered = true;
+        log_boot("Registered kmsg_dumper successfully\n");
+        
+        if (kmsg_dump_rewind_fn && kmsg_dump_get_line_fn) {
+            log_boot("kmsg_dump API functions found\n");
+        }
+    } else {
+        log_boot("Failed to register kmsg_dumper: %d\n", ret);
+    }
+    
+    return ret;
 }
 
 void before_panic(hook_fargs12_t *args, void *udata)
 {
-    printk("==== Start KernelPatch for Kernel panic ====\n");
-    //print_bootlog();
-    #ifdef ANDROID
-    do_syslog_t do_syslog_ptr; 
-    char *log_buf;
-    int len;
-    printk("kallsyms_lookup_name addr: %px\n", kallsyms_lookup_name);
-    if (kallsyms_lookup_name) {
+    printk("==== KernelPatch: Panic detected ====\n");
     
-        do_syslog_ptr = (do_syslog_t)kallsyms_lookup_name("do_syslog");
-        printk("do_syslog addr: %px\n", do_syslog_ptr);
-        if (!do_syslog_ptr) {
-            printk("KernelPatch: do_syslog symbol not found, cannot dump dmesg.\n");
-            return;
-        }
-        printk("KernelPatch: Dumping dmesg to %s\n", LOG_FILE_PATH);
-        printk("kmalloc addr: %px\n", kmalloc);
-        //log_buf = kmalloc(DMESG_BUF_SIZE, GFP_ATOMIC);
-        //printk("KernelPatch: kmalloc returned %px\n", log_buf);
-        //if (!log_buf) {
-        //    printk("KernelPatch: Failed to allocate memory for dmesg dump.\n");
-        //    return;
-        //}
-        #define DMESG_BUF_SIZE  (128 * 1024)
-        static char log_buf[DMESG_BUF_SIZE];
-        printk("KernelPatch: Allocated %d bytes for dmesg buffer at %px\n", DMESG_BUF_SIZE, log_buf);
-        if (kver < VERSION(5, 10, 0)){
-            mm_segment_t old_fs = get_fs();
-            set_fs(KERNEL_DS);
-            len = do_syslog_ptr(3, log_buf, DMESG_BUF_SIZE);
-            set_fs(old_fs);
-        }
-        else {
-            len = do_syslog_ptr(3, log_buf, DMESG_BUF_SIZE);
-        }
 
-        print_dmesg();
-        if (len > 0) {
-            kernel_write_file(LOG_FILE_PATH, log_buf, len, 0644);
-            printk("KernelPatch: Saved %d bytes of dmesg to %s\n", len, LOG_FILE_PATH);
-        } else {
-            printk("KernelPatch: do_syslog returned %d\n", len);
-        }
-        
+    void (*console_flush)(void) = (void (*)(void))kallsyms_lookup_name("console_flush_on_panic");
+    if (console_flush) {
+        console_flush();
     }
-    #endif
-    printk("==== End KernelPatch for Kernel panic ====\n");
+    
+    
+    int (*do_syslog)(int type, char *buf, int len) = (int (*)(int, char *, int))kallsyms_lookup_name("do_syslog");
+    
+    if (do_syslog) {
+        void *(*kmalloc_fn)(size_t, unsigned int) = (void *(*)(size_t, unsigned int))kallsyms_lookup_name("kmalloc");
+        void (*kfree_fn)(const void *) = (void (*)(const void *))kallsyms_lookup_name("kfree");
+        
+        if (kmalloc_fn && kfree_fn) {
+            char *buf = kmalloc_fn(64 * 1024, 0x20u); // GFP_ATOMIC
+            if (buf) {
+                int len = do_syslog(3, buf, 64 * 1024);
+                if (len > 0) {
+                    kernel_write_file(LOG_FILE_PATH, buf, len, 0644);
+                    printk("KernelPatch: Saved %d bytes via do_syslog\n", len);
+                }
+                kfree_fn(buf);
+            }
+        }
+    }
+
+    print_bootlog();
+    
+    printk("==== KernelPatch: Done ====\n");
 }
 
 void linux_misc_symbol_init();
@@ -165,6 +470,9 @@ static void before_rest_init(hook_fargs4_t *args, void *udata)
     int rc = 0;
     log_boot("entering init ...\n");
 
+    rc = init_kmsg_dump();
+    log_boot("init_kmsg_dump done: %d\n", rc);
+    
     if ((rc = bypass_kcfi())) goto out;
     log_boot("bypass_kcfi done: %d\n", rc);
 
