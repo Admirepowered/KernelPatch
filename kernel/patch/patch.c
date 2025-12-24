@@ -35,12 +35,12 @@ static loff_t kernel_write_file(const char *path, const void *data, loff_t len, 
 
     struct file *fp = filp_open(path, O_WRONLY | O_CREAT | O_TRUNC, mode);
     if (!fp || IS_ERR(fp)) {
-        log_boot("create file %s error: %d\n", path, PTR_ERR(fp));
+        printk("create file %s error: %d\n", path, PTR_ERR(fp));
         goto out;
     }
     kernel_write(fp, data, len, &off);
     if (off != len) {
-        log_boot("write file %s error: %x\n", path, off);
+        printk("write file %s error: %x\n", path, off);
         goto free;
     }
 
@@ -72,43 +72,71 @@ void print_bootlog()
     }
 }
 
+static void print_dmesg(void)
+{
+    char *buf = (char *)kallsyms_lookup_name("log_buf");
+    printk("1");
+    unsigned int len = *(unsigned int *)kallsyms_lookup_name("log_buf_len");
+    printk("2");
+    unsigned int idx = *(unsigned int *)kallsyms_lookup_name("log_buf_idx");
+    printk("3");
+    unsigned int i;
+    printk("buf=%px, len=%u, idx=%u\n", buf, len, idx);
+    if (!buf) return;
+
+    for (i = 0; i < len; i++) {
+        char c = buf[(idx + i) % len];
+        printk("%c", c); // 输出到 earlycon
+    }
+}
+
 void before_panic(hook_fargs12_t *args, void *udata)
 {
     printk("==== Start KernelPatch for Kernel panic ====\n");
-    print_bootlog();
+    //print_bootlog();
     #ifdef ANDROID
     do_syslog_t do_syslog_ptr; 
     char *log_buf;
     int len;
-    do_syslog_ptr = (do_syslog_t)kallsyms_lookup_name("do_syslog");
+    printk("kallsyms_lookup_name addr: %px\n", kallsyms_lookup_name);
+    if (kallsyms_lookup_name) {
     
-    if (!do_syslog_ptr) {
-        printk("KernelPatch: do_syslog symbol not found, cannot dump dmesg.\n");
-        return;
-    }
-    log_buf = kmalloc(DMESG_BUF_SIZE, GFP_ATOMIC);
-    if (!log_buf) {
-        printk("KernelPatch: Failed to allocate memory for dmesg dump.\n");
-        return;
-    }
-    if (kver < VERSION(5, 10, 0)){
-        mm_segment_t old_fs = get_fs();
-        set_fs(KERNEL_DS);
-        len = do_syslog_ptr(3, log_buf, DMESG_BUF_SIZE);
-        set_fs(old_fs);
-    }
-    else {
-        len = do_syslog_ptr(3, log_buf, DMESG_BUF_SIZE);
-    }
+        do_syslog_ptr = (do_syslog_t)kallsyms_lookup_name("do_syslog");
+        printk("do_syslog addr: %px\n", do_syslog_ptr);
+        if (!do_syslog_ptr) {
+            printk("KernelPatch: do_syslog symbol not found, cannot dump dmesg.\n");
+            return;
+        }
+        printk("KernelPatch: Dumping dmesg to %s\n", LOG_FILE_PATH);
+        printk("kmalloc addr: %px\n", kmalloc);
+        //log_buf = kmalloc(DMESG_BUF_SIZE, GFP_ATOMIC);
+        //printk("KernelPatch: kmalloc returned %px\n", log_buf);
+        //if (!log_buf) {
+        //    printk("KernelPatch: Failed to allocate memory for dmesg dump.\n");
+        //    return;
+        //}
+        #define DMESG_BUF_SIZE  (128 * 1024)
+        static char log_buf[DMESG_BUF_SIZE];
+        printk("KernelPatch: Allocated %d bytes for dmesg buffer at %px\n", DMESG_BUF_SIZE, log_buf);
+        if (kver < VERSION(5, 10, 0)){
+            mm_segment_t old_fs = get_fs();
+            set_fs(KERNEL_DS);
+            len = do_syslog_ptr(3, log_buf, DMESG_BUF_SIZE);
+            set_fs(old_fs);
+        }
+        else {
+            len = do_syslog_ptr(3, log_buf, DMESG_BUF_SIZE);
+        }
 
-
-    if (len > 0) {
-        kernel_write_file(LOG_FILE_PATH, log_buf, len, 0644);
-        printk("KernelPatch: Saved %d bytes of dmesg to %s\n", len, LOG_FILE_PATH);
-    } else {
-        printk("KernelPatch: do_syslog returned %d\n", len);
+        print_dmesg();
+        if (len > 0) {
+            kernel_write_file(LOG_FILE_PATH, log_buf, len, 0644);
+            printk("KernelPatch: Saved %d bytes of dmesg to %s\n", len, LOG_FILE_PATH);
+        } else {
+            printk("KernelPatch: do_syslog returned %d\n", len);
+        }
+        
     }
-    kfree(log_buf);
     #endif
     printk("==== End KernelPatch for Kernel panic ====\n");
 }
