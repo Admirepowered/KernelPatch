@@ -52,7 +52,7 @@
 
 
 long (*copy_from_kernel_nofault_fn)(void *dst, const void *src, size_t size);
-
+typedef int (*verity_handle_err_t)(void *v,int type,unsigned long long block,void *io,void *iter);
 extern struct file *kfunc_def(fget)(int fd);
 extern void *kfunc_def(fput)(struct file *file);
 extern char *kfunc_def(d_path)(const struct path *, char *, int);
@@ -490,6 +490,30 @@ int try_to_hook_ko_init(){
     return rc;
 }
 
+static void before_verity_handle_err(hook_fargs5_t *args, void *udata)
+{
+    args->skip_origin = 1;
+    log_boot("verity_handle_err called, bypassing verity error...\n");
+    return;
+}
+
+void sansumg_patch()
+{
+    static void *verity_handle_err_addr;
+    verity_handle_err_addr =
+        (void *)kallsyms_lookup_name("verity_handle_err_hex_debug");
+
+    if (!verity_handle_err_addr) {
+        printk("verity_handle_err_hex_debug not found not samsung devices\n");
+        return;
+    }
+
+    printk("verity_handle_err_hex_debug @ %px\n",
+            verity_handle_err_addr);
+    hook_wrap5(verity_handle_err_addr, before_verity_handle_err, 0, 0);
+    return;
+
+}
 
 int android_user_init()
 {
@@ -515,6 +539,6 @@ int android_user_init()
         log_boot("hook input_handle_event rc: %d\n", rc);
     }
     try_to_hook_ko_init();
-
+    sansumg_patch();
     return ret;
 }
