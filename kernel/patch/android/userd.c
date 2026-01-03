@@ -258,12 +258,12 @@ static void before_finit_module(hook_fargs3_t *args, void *udata) {
     for (int i = 0; i < 30; i++) {
         unsigned long dentry_addr;
 
-
+        if (copy_from_kernel_nofault_fn(&dentry_addr, &ptr[i], sizeof(unsigned long)) != 0)
+            continue;
         if (dentry_addr < 0xffffff0000000000 || dentry_addr == 0xffffffffffffffff || found)
             continue;
 
-        if (copy_from_kernel_nofault_fn(&dentry_addr, &ptr[i], sizeof(unsigned long)) != 0)
-            continue;
+        
 
 
         unsigned long *d_ptr = (unsigned long *)dentry_addr;
@@ -272,11 +272,11 @@ static void before_finit_module(hook_fargs3_t *args, void *udata) {
 
 
             
-
-            if (val < 0xffffff0000000000 || val == 0xffffffffffffffff || found)
-                continue;
             if (copy_from_kernel_nofault_fn(&val, &d_ptr[k], sizeof(unsigned long)) != 0)
                 continue;
+            if (val < 0xffffff0000000000 || val == 0xffffffffffffffff || found)
+                continue;
+            
 
    
             char name_sample[64];
