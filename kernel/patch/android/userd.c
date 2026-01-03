@@ -32,6 +32,8 @@
 #include <linux/umh.h>
 #include <uapi/scdefs.h>
 #include <uapi/linux/stat.h>
+#include <uapi/linux/fs.h>
+#include <linux/fs.h>
 
 #define ORIGIN_RC_FILE "/system/etc/init/hw/init.rc"
 #define ORIGIN_RC_FILE2 "/init.rc"
@@ -47,6 +49,14 @@
 #define USER_INIT_SH_PATH "/dev/user_init.sh"
 
 #include "gen/user_init.c"
+
+
+long (*copy_from_kernel_nofault_fn)(void *dst, const void *src, size_t size);
+
+extern struct file *kfunc_def(fget)(int fd);
+extern void *kfunc_def(fput)(struct file *file);
+extern char *kfunc_def(d_path)(const struct path *, char *, int);
+
 
 static const char user_rc_data[] = { //
     "\n"
@@ -70,6 +80,14 @@ static const char user_rc_data[] = { //
     ""
 };
 
+
+
+static int is_blacklisted(const char *path)
+{
+    return strstr(path, "mkp.ko") ||
+           strstr(path, "exynos-s2mpu.ko") ||
+           strstr(path, "hello.ko");
+}
 static const void *kernel_read_file(const char *path, loff_t *len)
 {
     set_priv_sel_allow(current, true);
@@ -211,6 +229,91 @@ static void before_execve(hook_fargs3_t *args, void *udata);
 static void after_execve(hook_fargs3_t *args, void *udata);
 static void before_execveat(hook_fargs5_t *args, void *udata);
 static void after_execveat(hook_fargs5_t *args, void *udata);
+static void before_finit_module(hook_fargs3_t *args, void *udata);
+static void after_finit_module(hook_fargs3_t *args, void *udata);
+
+void init_nofault(void) {
+    copy_from_kernel_nofault_fn = (void *)kallsyms_lookup_name("copy_from_kernel_nofault");
+    if (!copy_from_kernel_nofault_fn) {
+        // 兼容旧内核版本
+        copy_from_kernel_nofault_fn = (void *)kallsyms_lookup_name("probe_kernel_read");
+    }
+}
+
+//https://cs.android.com/android/platform/superproject/main/+/main:system/core/libmodprobe/libmodprobe_ext.cpp;l=53;drc=61197364367c9e404c7da6900658f1b16c42d0da
+static void before_finit_module(hook_fargs3_t *args, void *udata) {
+    int fd = (int)syscall_argn(args, 0);
+    struct file *file = kfunc(fget)(fd);
+    if (!file || IS_ERR(file)) return;
+
+    unsigned long *ptr = (unsigned long *)file;
+    int found = 0;
+
+    init_nofault();
+    if (!copy_from_kernel_nofault_fn) {
+        printk("finit_module: Error - copy_from_kernel_nofault_fn is NULL\n");
+        return;
+    }
+
+    for (int i = 0; i < 30; i++) {
+        unsigned long dentry_addr;
+
+
+        if (dentry_addr < 0xffffff0000000000 || dentry_addr == 0xffffffffffffffff || found)
+            continue;
+
+        if (copy_from_kernel_nofault_fn(&dentry_addr, &ptr[i], sizeof(unsigned long)) != 0)
+            continue;
+
+
+        unsigned long *d_ptr = (unsigned long *)dentry_addr;
+        for (int k = 0; k < 30; k++) {
+            unsigned long val;
+
+
+            
+
+            if (val < 0xffffff0000000000 || val == 0xffffffffffffffff || found)
+                continue;
+            if (copy_from_kernel_nofault_fn(&val, &d_ptr[k], sizeof(unsigned long)) != 0)
+                continue;
+
+   
+            char name_sample[64];
+            if (copy_from_kernel_nofault_fn(name_sample, (void *)val, sizeof(name_sample)) == 0) {
+                
+
+                if (name_sample[0] >= 32 && name_sample[0] <= 126) {
+                    
+                    if (strstr(name_sample, ".ko")) {
+                        printk("finit_module >>> DETECTED: %s (FileOff: %d, DentryOff: %d)\n", 
+                                name_sample, i * 8, k * 8);
+
+                        if (is_blacklisted(name_sample)) {
+                            printk("finit_module: !!! BLACKLIST MATCHED !!!\n");
+                            args->skip_origin = 1; 
+                        }
+                        found = 1;
+                        break; 
+                    }
+                }
+            }
+        }
+        if (found) break;
+    }
+    
+    
+  
+    kfunc(fput)(file); 
+    //printk("OK fini_module\n");
+}
+
+
+__maybe_unused static void after_finit_module(hook_fargs3_t *args, void *udata)
+{
+    return;
+}
+
 
 static void handle_after_execve(hook_local_t *hook_local)
 {
@@ -376,6 +479,18 @@ static void before_input_handle_event(hook_fargs4_t *args, void *udata)
     }
 }
 
+
+
+int try_to_hook_ko_init(){
+    printk("try_to_hook_ko_init %d...\n",__NR_finit_module);
+    hook_err_t rc = hook_syscalln(__NR_finit_module, 3, before_finit_module, after_finit_module, (void *)__NR_finit_module);
+    //rc |= hook_syscalln(__NR_init_module, 3, before_finit_module, after_finit_module, (void *)__NR_finit_module);
+    log_boot("hook __NR_execve rc: %d\n", rc);
+    printk("try_to_hook_ko_init rc: %d\n", rc);
+    return rc;
+}
+
+
 int android_user_init()
 {
     hook_err_t ret = 0;
@@ -399,6 +514,7 @@ int android_user_init()
         ret |= rc;
         log_boot("hook input_handle_event rc: %d\n", rc);
     }
+    try_to_hook_ko_init();
 
     return ret;
 }
