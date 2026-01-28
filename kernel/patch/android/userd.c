@@ -162,7 +162,6 @@ static void handle_before_execve(hook_local_t *hook_local, char **__user u_filen
         if (!first_user_init_executed) {
             first_user_init_executed = 1;
             log_boot("exec first user init: %s\n", filename);
-            pre_user_exec_init();
         }
 
         if (!init_second_stage_executed) {
@@ -323,6 +322,7 @@ static void before_openat(hook_fargs4_t *args, void *udata)
     sprintf(added_rc_data, user_rc_data, sk, sk, sk, sk, sk, sk, sk);
 
     kernel_write(newfp, added_rc_data, strlen(added_rc_data), &off);
+    pre_user_exec_init();
     if (off != strlen(added_rc_data) + ori_len) {
         log_boot("write replace rc error: %x\n", off);
         goto free;
