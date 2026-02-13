@@ -43,7 +43,9 @@
 #define AP_LOG_DIR AP_DIR "log/"
 #define AP_MAGISKPOLICY_PATH AP_BIN_DIR "magiskpolicy"
 #define MAGISK_SCTX "u:r:magisk:s0"
-#define USER_INIT_SH_PATH "/dev/user_init.sh"
+#define APD_PATH "/data/adb/apd"
+#define MAGISK_POLICY_PATH "/data/adb/ap/bin/magiskpolicy"
+
 
 #include "gen/user_init.c"
 
@@ -57,22 +59,26 @@ static const char ORIGIN_RC_FILES[][64] = {
 static const char user_rc_data[] = { //
     "\n"
     "on early-init\n"
-    "    exec -- " SUPERCMD " su exec " USER_INIT_SH_PATH " %s early-init\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " APD_PATH " -s %s early-init\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " MAGISK_POLICY_PATH " --magisk --live\n"
     "on init\n"
-    "    exec -- " SUPERCMD " su exec " USER_INIT_SH_PATH " %s init\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " APD_PATH " -s %s init\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " MAGISK_POLICY_PATH " --magisk --live\n"
     "on late-init\n"
-    "    exec -- " SUPERCMD " su exec " USER_INIT_SH_PATH " %s late-init\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " APD_PATH " -s %s late-init\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " MAGISK_POLICY_PATH " --magisk --live\n"
     "on post-fs-data\n"
-    "    exec -- " SUPERCMD " su exec " USER_INIT_SH_PATH " %s post-fs-data\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " APD_PATH " -s %s post-fs-data\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " MAGISK_POLICY_PATH " --magisk --live\n"
     "on nonencrypted\n"
-    "    exec -- " SUPERCMD " su exec " USER_INIT_SH_PATH " %s services\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " APD_PATH " -s %s services\n"
     "on property:vold.decrypt=trigger_restart_framework\n"
-    "    exec -- " SUPERCMD " su exec " USER_INIT_SH_PATH " %s services\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " APD_PATH " -s %s services\n"
     "on property:sys.boot_completed=1\n"
-    "    exec -- " SUPERCMD " su exec " USER_INIT_SH_PATH " %s boot-completed\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " APD_PATH " -s %s boot-completed\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " exec " APD_PATH " uid-listener &\n"
     "    rm " REPLACE_RC_FILE "\n"
-    "    rm " USER_INIT_SH_PATH "\n"
-    "    exec -- " SUPERCMD " su -c \"mv -f " DEV_LOG_DIR " " AP_LOG_DIR "\"\n"
+    "    exec -- " SUPERCMD " su -Z " MAGISK_SCTX " -c \"mv -f " DEV_LOG_DIR " " AP_LOG_DIR "\"\n"
     ""
 };
 
@@ -125,7 +131,7 @@ out:
 static void pre_user_exec_init()
 {
     log_boot("event: %s\n", EXTRA_EVENT_PRE_EXEC_INIT);
-    kernel_write_file(USER_INIT_SH_PATH, user_init, sizeof(user_init), 0700);
+
 }
 
 static void pre_init_second_stage()
