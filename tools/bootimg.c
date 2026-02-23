@@ -165,24 +165,62 @@ int decompress_gzip(const uint8_t *in_data, size_t in_size, const char *out_path
     return 0;
 }
 
-int compress_lz4(const uint8_t *in_data, size_t in_size, uint8_t **out_data, uint32_t *out_size) {
+static int parse_lz4_header(const compress_head *head, LZ4F_preferences_t *prefs) {
+    uint32_t magic = (head->magic[0] << 0) | (head->magic[1] << 8) | 
+                     (head->magic[2] << 16) | (head->magic[3] << 24);
+    if (magic != 0x184D2204) {
+        return -1;
+    }
+    LZ4F_preferences_t tmp = LZ4F_INIT_PREFERENCES;
+    *prefs = tmp;
 
-    size_t max_out_size = LZ4F_compressFrameBound(in_size, NULL);
+    uint8_t flg = head->magic[4];
+    prefs->frameInfo.blockMode = (flg & 0x20) ? LZ4F_blockIndependent : LZ4F_blockLinked;
+    prefs->frameInfo.blockChecksumFlag = (flg & 0x10) ? 
+                                         LZ4F_blockChecksumEnabled : LZ4F_noBlockChecksum;
+    prefs->frameInfo.contentChecksumFlag = (flg & 0x08) ? 
+                                           LZ4F_contentChecksumEnabled : LZ4F_noContentChecksum;
+    
+
+    uint8_t bd = head->magic[5];
+    uint8_t block_size_id = (bd >> 4) & 0x07;
+    switch (block_size_id) {
+        case 4: prefs->frameInfo.blockSizeID = LZ4F_max64KB; break;
+        case 5: prefs->frameInfo.blockSizeID = LZ4F_max256KB; break;
+        case 6: prefs->frameInfo.blockSizeID = LZ4F_max1MB; break;
+        case 7: prefs->frameInfo.blockSizeID = LZ4F_max4MB; break;
+        default: return -2;
+    }
+    
+    return 0;
+}
+
+int compress_lz4(const uint8_t *in_data, size_t in_size, 
+                 uint8_t **out_data, uint32_t *out_size, 
+                 compress_head k_head) {
+    
+    LZ4F_preferences_t prefs;
+    int ret = parse_lz4_header(&k_head, &prefs);
+    if (ret < 0) {
+        return -3; 
+    }
+    
+
+    size_t max_out_size = LZ4F_compressFrameBound(in_size, &prefs);
     
     *out_data = (uint8_t *)malloc(max_out_size);
     if (!*out_data) {
         return -1;
     }
 
-    // 2. use default config (NULL -> default LZ4F_preferences_t)
-    // LZ4F_compressFrame will produce a standard LZ4 frame (magic number 0x184D2204)
-    size_t compressed_size = LZ4F_compressFrame(*out_data, max_out_size, in_data, in_size, NULL);
-
+    size_t compressed_size = LZ4F_compressFrame(*out_data, max_out_size, 
+                                                in_data, in_size, &prefs);
+    
     if (LZ4F_isError(compressed_size)) {
         free(*out_data);
         return -2;
     }
-
+    
     *out_size = (uint32_t)compressed_size;
     return 0;
 }
@@ -762,7 +800,7 @@ int repack_bootimg(const char *orig_boot_path,
     }
     if (method == 2) { 
         tools_logi("Compressing new kernel with LZ4...\n");
-        if (compress_lz4(raw_k_buf, raw_k_size, &compressed_buf, &final_k_size) == 0) {
+        if (compress_lz4(raw_k_buf, raw_k_size, &compressed_buf, &final_k_size, k_head) == 0) {
             final_k_buf = compressed_buf;
         }
     }
