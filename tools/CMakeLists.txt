@@ -39,3 +39,13 @@ find_package(ZLIB REQUIRED)
 target_include_directories(kptools PRIVATE ${ZLIB_INCLUDE_DIRS})
 
 target_link_libraries(kptools PRIVATE ${ZLIB_LIBRARIES})
+
+find_package(OpenSSL)
+if(OPENSSL_FOUND)
+    target_compile_definitions(kptools PRIVATE HAVE_OPENSSL)
+    target_include_directories(kptools PRIVATE ${OPENSSL_INCLUDE_DIR})
+    target_link_libraries(kptools PRIVATE OpenSSL::Crypto)
+    message(STATUS "OpenSSL found -- AVB RSA signing enabled")
+else()
+    message(STATUS "OpenSSL not found -- AVB signing will update hash only (no RSA)")
+endif()

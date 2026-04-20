@@ -47,7 +47,9 @@ void print_usage(char **argv)
         "  -l, --list                       Print all patch informations of kernel image if (-i) specified.\n"
         "                                   Print extra item informations if (-M) specified.\n"
         "                                   Print KernelPatch image informations if (-k) specified.\n"
-        "Unpack kernel: unpack <boot.img>\n  Repack Kernel: repack <boot.img>\n"
+        "Unpack kernel : unpack <boot.img>\n"
+        "Repack kernel : repack <boot.img> [kernel] [out-boot.img]\n"
+        "Re-sign image : resign <boot.img> <key_path> [algorithm] [partition_name]\n"
         "Options:\n"
         "  -i, --image PATH                 Kernel image path.\n"
         "  -k, --kpimg PATH                 KernelPatch image path.\n"
@@ -82,14 +84,34 @@ int main(int argc, char *argv[])
         }
         if (strcmp(argv[1], "unpacknolog") == 0) {
             return extract_kernel(argv[2]);
-        } 
+        }
         if (strcmp(argv[1], "repack") == 0) {
             set_log_enable(true);
             return repack_bootimg(argv[2], "kernel", "new-boot.img");
-        } 
-        if (strcmp(argv[1], "sha1") == 0) {
-            return cacluate_sha1(argv[2]);
         }
+        if (strcmp(argv[1], "sha1") == 0) {
+            return calculate_sha1(argv[2]);
+        }
+    }
+    if (argc > 3 && strcmp(argv[1], "repack") == 0) {
+        /* repack <boot.img> <kernel> [out-boot.img] */
+        set_log_enable(true);
+        const char *out = (argc > 4) ? argv[4] : "new-boot.img";
+        return repack_bootimg(argv[2], argv[3], out);
+    }
+    if (argc >= 4 && strcmp(argv[1], "resign") == 0) {
+        /*
+         * resign <boot.img> <key_path> [algorithm] [partition_name]
+         * Example:
+         *   kptools resign boot.img testkey_rsa2048.pem SHA256_RSA2048 boot
+         */
+        set_log_enable(true);
+        bootimg_avb_sign_args_t args = {
+            .algorithm      = (argc >= 5) ? argv[4] : NULL,
+            .key_path       = argv[3],
+            .partition_name = (argc >= 6) ? argv[5] : NULL,
+        };
+        return resign_bootimg_avb(argv[2], &args);
     }
     struct option longopts[] = { { "help", no_argument, NULL, 'h' },
                                  { "version", no_argument, NULL, 'v' },
