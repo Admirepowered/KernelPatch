@@ -13,8 +13,8 @@
 #define KP_MAGIC "KP1158"
 #define MAGIC_LEN 0x8
 #define KP_HEADER_SIZE 0x40
-#define SUPER_KEY_LEN 0x40
-#define ROOT_SUPER_KEY_HASH_LEN 0x20
+#define SUPER_KEY_LEN 0x40           // deprecated: kept for binary layout compatibility
+#define ROOT_SUPER_KEY_HASH_LEN 0x20  // deprecated: kept for binary layout compatibility
 #define SETUP_PRESERVE_LEN 0x40
 #define HDR_BACKUP_SIZE 0x8
 #define COMPILE_TIME_LEN 0x18

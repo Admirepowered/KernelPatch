@@ -1,24 +1,14 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-/* 
+/*
  * Copyright (C) 2023 bmax121. All Rights Reserved.
  */
 
 #ifndef _KP_UAPI_SCDEF_H_
 #define _KP_UAPI_SCDEF_H_
 
-static inline long hash_key(const char *key)
-{
-    long hash = 1000000007;
-    for (int i = 0; key[i]; i++) {
-        hash = hash * 31 + key[i];
-    }
-    return hash;
-}
-
 #define SUPERCALL_HELLO_ECHO "hello1158"
 
-// #define __NR_supercall __NR3264_truncate // 45
-#define __NR_supercall 45
+#define KP_DEVICE_PATH "/dev/kp"
 
 #define SUPERCALL_HELLO 0x1000
 #define SUPERCALL_KLOG 0x1004
@@ -27,14 +17,10 @@ static inline long hash_key(const char *key)
 #define SUPERCALL_KERNELPATCH_VER 0x1008
 #define SUPERCALL_KERNEL_VER 0x1009
 
-
-#define SUPERCALL_SKEY_GET 0x100a
-#define SUPERCALL_SKEY_SET 0x100b
-#define SUPERCALL_SKEY_ROOT_ENABLE 0x100c
 #define SUPERCALL_AP_LOAD_PACKAGE_CONFIG 0x100d
 
 #define SUPERCALL_SU 0x1010
-#define SUPERCALL_SU_TASK 0x1011 // syscall(__NR_gettid)
+#define SUPERCALL_SU_TASK 0x1011
 
 #define SUPERCALL_KPM_LOAD 0x1020
 #define SUPERCALL_KPM_UNLOAD 0x1021
@@ -66,7 +52,6 @@ struct kernel_storage
 #define SUPERCALL_PANIC 0x10fe
 #define SUPERCALL_TEST 0x10ff
 
-#define SUPERCALL_KEY_MAX_LEN 0x40
 #define SUPERCALL_SCONTEXT_LEN 0x60
 
 struct su_profile
@@ -110,8 +95,6 @@ struct su_profile
 #define SUPERCALL_SU_GET_PATH 0x1110
 #define SUPERCALL_SU_RESET_PATH 0x1111
 #define SUPERCALL_SU_GET_SAFEMODE 0x1112
-
-
 
 #define SUPERCALL_MAX 0x1200
 

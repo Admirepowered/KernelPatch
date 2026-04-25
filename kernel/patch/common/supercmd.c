@@ -61,8 +61,8 @@ static void supercmd_echo(char **__user u_filename_p, char **__user uargv, uintp
 static const char supercmd_help[] =
     ""
     "KernelPatch supercmd:\n"
-    "Usage: truncate <superkey|su> [-uZc] [Command [[SubCommand]...]]\n"
-    "superkey|su:                   Authentication.\n"
+    "Usage: truncate <su> [-uZc] [Command [[SubCommand]...]]\n"
+    "su:                            Authentication via su permission.\n"
     "Options:\n"
     "  -u <UID>                     Change user id to UID.\n"
     "  -Z <SCONTEXT>                Change security context to SCONTEXT.\n"
@@ -93,7 +93,7 @@ static const char supercmd_help[] =
 #endif
     "  event <EVENT>                        Report EVENT.\n"
     "\n"
-    "The command below requires superkey authentication.\n"
+    "The commands below require manager authentication.\n"
     "  module <SubCommand> [...]:   KernelPatch Module manager\n"
     "    SubCommand:\n"
     "      load <KPM_PATH> [KPM_ARGS]       Load module with KPM_PATH and KPM_ARGS.\n"
@@ -102,10 +102,6 @@ static const char supercmd_help[] =
     "      num                              Get the number of modules that have been loaded.\n"
     "      list                             List names of all loaded modules.\n"
     "      info <KPM_NAME>                  Get detailed information about module named KPM_NAME.\n"
-    "  key <SubCommand> [...]:      Superkey manager\n"
-    "    SubCommand:\n"
-    "      key [SUPERKEY]:                  Get or Reset current superkey\n"
-    "      hash <enable|disable>:           Whether to use hash to verify the root superkey.\n"
     "";
 
 struct cmd_res
@@ -231,41 +227,10 @@ static void handle_cmd_sumgr(char **__user u_filename_p, const char **carr, char
     }
 }
 
-
-// superkey commands
-static void handle_cmd_key_auth(char **__user u_filename_p, const char *cmd, const char **carr, char *buffer,
-                                int buflen, struct cmd_res *cmd_res)
+static void handle_cmd_manager(char **__user u_filename_p, const char *cmd, const char **carr, char *buffer,
+                               int buflen, struct cmd_res *cmd_res)
 {
-    if (!strcmp("key", cmd)) {
-        const char *sub_cmd = carr[1];
-        if (!sub_cmd) sub_cmd = "";
-        if (!strcmp("get", sub_cmd)) {
-            cmd_res->msg = get_superkey();
-        } else if (!strcmp("set", sub_cmd)) {
-            const char *key = carr[2];
-            if (!key) {
-                cmd_res->err_msg = "invalid new key";
-                return;
-            }
-            cmd_res->msg = key;
-            reset_superkey(key);
-        } else if (!strcmp("hash", sub_cmd)) {
-            const char *able = carr[2];
-            if (able && !strcmp("enable", able)) {
-                cmd_res->msg = able;
-                enable_auth_root_key(true);
-            } else if (able && !strcmp("disable", able)) {
-                cmd_res->msg = able;
-                enable_auth_root_key(false);
-            } else {
-                cmd_res->err_msg = "invalid enable or disable";
-                return;
-            }
-        } else {
-            cmd_res->err_msg = "invalid subcommand";
-            return;
-        }
-    } else if (!strcmp("module", cmd)) {
+    if (!strcmp("module", cmd)) {
         const char *sub_cmd = carr[1];
         if (!sub_cmd) sub_cmd = "";
         if (!strcmp("num", sub_cmd)) {
@@ -328,25 +293,18 @@ static void handle_cmd_key_auth(char **__user u_filename_p, const char *cmd, con
 
 void handle_supercmd(char **__user u_filename_p, char **__user uargv)
 {
-    int is_key_auth = 0;
     int is_trusted_manager = 0;
     is_trusted_manager = is_trusted_manager_uid(current_uid());
-    if (is_trusted_manager) {
-        is_key_auth = 1;
-    }
-    // key
+
     const char __user *p1 = get_user_arg_ptr(0, *uargv, 1);
     if (!p1 || IS_ERR(p1)) return;
 
     struct su_profile profile = { .to_uid = 0, .scontext = "" };
 
-    // auth key
-    char arg1[SUPER_KEY_LEN];
+    char arg1[16];
     if (compat_strncpy_from_user(arg1, p1, sizeof(arg1)) <= 0) return;
 
-    if (!auth_superkey(arg1)) {
-        is_key_auth = 1;
-    } else if (!strcmp("su", arg1)) {
+    if (!strcmp("su", arg1)) {
         uid_t uid = current_uid();
         if (!is_su_allow_uid(uid) && !is_trusted_manager) return;
         su_allow_uid_profile(0, uid, &profile);
@@ -356,7 +314,6 @@ void handle_supercmd(char **__user u_filename_p, char **__user uargv)
 
 #define SUPERCMD_ARGS_NO 16
 
-    // copy args
     const char *parr[SUPERCMD_ARGS_NO + 4] = { 0 };
 
     for (int i = 2; i < SUPERCMD_ARGS_NO; i++) {
@@ -365,13 +322,11 @@ void handle_supercmd(char **__user u_filename_p, char **__user uargv)
         const char *a = strndup_user(ua, 512);
         if (IS_ERR(a)) break;
         parr[i] = a;
-        // ignore after -c
         if (a[0] == '-' && a[1] == 'c') break;
     }
 
     uint64_t sp = current_user_stack_pointer();
 
-    // if no any more
     if (!parr[2]) {
         supercmd_exec(u_filename_p, sh_path, &sp);
         const char *__user argv1 = supercmd_str_to_user_sp(sh_path, &sp);
@@ -383,11 +338,9 @@ void handle_supercmd(char **__user u_filename_p, char **__user uargv)
 
     int pi = 2;
 
-    // options, contiguous
     while (pi < SUPERCMD_ARGS_NO) {
         const char *arg = parr[pi];
         if (!arg || arg[0] != '-') break;
-        // ignore -c
         if (arg[0] == '-' && arg[1] == 'c') break;
         char o = arg[1];
         pi++;
@@ -423,7 +376,6 @@ void handle_supercmd(char **__user u_filename_p, char **__user uargv)
     char buffer[4096];
     buffer[0] = '\0';
 
-    // command
     const char **carr = parr + pi;
     const char *cmd = 0;
 
@@ -484,10 +436,10 @@ void handle_supercmd(char **__user u_filename_p, char **__user uargv)
         test();
         cmd_res.msg = "test done...";
     } else {
-        if (is_key_auth) {
-            handle_cmd_key_auth(u_filename_p, cmd, carr, buffer, sizeof(buffer), &cmd_res);
+        if (is_trusted_manager) {
+            handle_cmd_manager(u_filename_p, cmd, carr, buffer, sizeof(buffer), &cmd_res);
         } else {
-            cmd_res.err_msg = "invalid command or a superkey is required";
+            cmd_res.err_msg = "invalid command or manager permission required";
         }
     }
 
@@ -497,7 +449,6 @@ echo:
     if (cmd_res.err_msg) supercmd_echo(u_filename_p, uargv, &sp, "supercmd error message: %s", cmd_res.err_msg);
 
 free:
-    // free args
     for (int i = 2; i < sizeof(parr) / sizeof(parr[0]); i++) {
         const char *a = parr[i];
         if (!a) continue;

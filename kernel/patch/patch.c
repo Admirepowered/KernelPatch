@@ -48,7 +48,7 @@ int hotpatch_init();
 int bypass_kcfi();
 int bypass_selinux();
 int resolve_pt_regs();
-int supercall_install();
+void kp_supercalls_init();
 void module_init();
 void syscall_init();
 int kstorage_init();
@@ -79,8 +79,8 @@ static void before_rest_init(hook_fargs4_t *args, void *udata)
     if ((rc = task_observer())) goto out;
     log_boot("task_observer done: %d\n", rc);
 
-    rc = supercall_install();
-    log_boot("supercall_install done: %d\n", rc);
+    kp_supercalls_init();
+    log_boot("kp_supercalls_init done\n");
 
     rc = kstorage_init();
     log_boot("kstorage_init done: %d\n", rc);
