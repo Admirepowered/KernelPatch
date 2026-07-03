@@ -300,22 +300,78 @@ static void ensure_kconfig_loaded(void)
     log_boot("kconfig inflated from IKCFG, size: %lu -> %d\n", deflate_len, kernel_config_size);
 }
 
+static int extra_item_stored_size(const patch_extra_item_t *item)
+{
+    if (!(item->flags & EXTRA_FLAG_COMPRESSED)) return item->con_size;
+    return item->stored_size > 0 ? item->stored_size : item->con_size;
+}
+
+static int call_extra_item(int (*callback)(const patch_extra_item_t *extra, const char *arg, const void *con,
+                                           void *udata),
+                           const patch_extra_item_t *item, const char *args, const void *stored_con, void *udata)
+{
+    if (!(item->flags & EXTRA_FLAG_COMPRESSED)) {
+        return callback(item, args, stored_con, udata);
+    }
+
+    int stored_size = extra_item_stored_size(item);
+    int compressed_size = item->compressed_size > 0 ? item->compressed_size : stored_size;
+    if (item->con_size <= 0 || stored_size <= 0 || compressed_size <= 0 || compressed_size > stored_size) {
+        log_boot("extra: bad compressed sizes, name=%s, con=%d, stored=%d, compressed=%d\n", item->name,
+                 item->con_size, stored_size, compressed_size);
+        return 0;
+    }
+
+    char *buf = kp_malloc(item->con_size);
+    if (!buf) {
+        log_boot("extra: malloc failed for %s, size=%d\n", item->name, item->con_size);
+        return 0;
+    }
+
+    unsigned long destlen = item->con_size;
+    unsigned long sourcelen = compressed_size;
+    int rc = puff((unsigned char *)buf, &destlen, stored_con, &sourcelen);
+    if (rc || destlen != (unsigned long)item->con_size) {
+        log_boot("extra: puff failed for %s, rc=%d, out=%lu/%d\n", item->name, rc, destlen, item->con_size);
+        kp_free(buf);
+        return 0;
+    }
+
+    patch_extra_item_t inflated = *item;
+    inflated.flags &= ~EXTRA_FLAG_COMPRESSED;
+    inflated.stored_size = inflated.con_size;
+    inflated.compressed_size = 0;
+    rc = callback(&inflated, args, buf, udata);
+    kp_free(buf);
+    return rc;
+}
+
 int on_each_extra_item(int (*callback)(const patch_extra_item_t *extra, const char *arg, const void *con, void *udata),
                        void *udata)
 {
     int rc = 0;
     uint64_t item_addr = _kp_extra_start;
-    while (item_addr < _kp_extra_end) {
+    while (item_addr + sizeof(patch_extra_item_t) <= _kp_extra_end) {
         patch_extra_item_t *item = (patch_extra_item_t *)item_addr;
         if (item->type == EXTRA_TYPE_NONE) break;
         if (lib_memcmp(item->magic, EXTRA_HDR_MAGIC, sizeof(item->magic))) break;
+        int stored_size = extra_item_stored_size(item);
+        if (item->args_size < 0 || item->con_size < 0 || stored_size < 0) {
+            log_boot("extra: bad item sizes, name=%s, args=%d, con=%d, stored=%d\n", item->name, item->args_size,
+                     item->con_size, stored_size);
+            break;
+        }
         const char *args = item->args_size > 0 ? (const char *)(item_addr + sizeof(patch_extra_item_t)) : 0;
         const void *con = (void *)(item_addr + sizeof(patch_extra_item_t) + item->args_size);
-        rc = callback(item, args, con, udata);
+        uint64_t next_item = item_addr + sizeof(patch_extra_item_t) + item->args_size + stored_size;
+        if (next_item < item_addr || next_item > _kp_extra_end) {
+            log_boot("extra: item out of range, name=%s, next=%llx, end=%llx\n", item->name, next_item,
+                     _kp_extra_end);
+            break;
+        }
+        rc = call_extra_item(callback, item, args, con, udata);
         if (rc) break;
-        item_addr += sizeof(patch_extra_item_t);
-        item_addr += item->args_size;
-        item_addr += item->con_size;
+        item_addr = next_item;
     }
     return rc;
 }

@@ -90,5 +90,6 @@ int extract_kernel(const char *bootimg_path);
 
 int detect_compress_method(compress_head data);
 int compress_raw_deflate(const uint8_t *in_data, int in_len, uint8_t **out_data, int *out_len);
+int decompress_raw_deflate(const uint8_t *in_data, int in_len, uint8_t **out_data, int out_len);
 int cacluate_sha1(const char *file);
 void *memmem(const void *haystack, size_t haystacklen,const void *needle, size_t needlelen);

@@ -139,6 +139,31 @@ int compress_raw_deflate(const uint8_t *in_data, int in_len, uint8_t **out_data,
     return 0;
 }
 
+int decompress_raw_deflate(const uint8_t *in_data, int in_len, uint8_t **out_data, int out_len) {
+    z_stream strm = {0};
+    if (inflateInit2(&strm, -MAX_WBITS) != Z_OK)
+        return -1;
+
+    *out_data = malloc(out_len);
+    if (!*out_data) { inflateEnd(&strm); return -1; }
+
+    strm.next_in = (Bytef *)in_data;
+    strm.avail_in = in_len;
+    strm.next_out = *out_data;
+    strm.avail_out = out_len;
+
+    int ret = inflate(&strm, Z_FINISH);
+    if (ret != Z_STREAM_END || (int)strm.total_out != out_len) {
+        free(*out_data);
+        *out_data = NULL;
+        inflateEnd(&strm);
+        return -2;
+    }
+
+    inflateEnd(&strm);
+    return 0;
+}
+
 int compress_gzip(const uint8_t *in_data, size_t in_size, uint8_t **out_data, uint32_t *out_size) {
     z_stream strm = {0};
     if (deflateInit2(&strm, 9, Z_DEFLATED, 16 + MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) 

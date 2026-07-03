@@ -170,6 +170,8 @@ typedef int32_t extra_item_type;
 #define EXTRA_TYPE_RAW_STR "raw"
 #define EXTRA_TYPE_ANDROID_RC_STR "android_rc"
 
+#define EXTRA_FLAG_COMPRESSED (1 << 0)
+
 // todo
 #define EXTRA_EVENT_PAGING_INIT "paging-init"
 
@@ -200,6 +202,8 @@ struct _patch_extra_item
             char name[EXTRA_NAME_LEN];
             char event[EXTRA_EVENT_LEN];
             int32_t flags;
+            int32_t stored_size;
+            int32_t compressed_size;
         };
         char _cap[PATCH_EXTRA_ITEM_LEN];
     };

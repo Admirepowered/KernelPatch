@@ -125,6 +125,11 @@ const char *extra_type_str(extra_item_type extra_type)
     }
 }
 
+static int extra_item_stored_size(const patch_extra_item_t *item);
+static int extra_item_compressed_size(const patch_extra_item_t *item);
+static void compress_extra_payload(extra_config_t *config);
+static const void *get_extra_payload_for_tools(patch_extra_item_t *item, const void *stored_con, uint8_t **allocated);
+
 static char *bytes_to_hexstr(const unsigned char *data, int len)
 {
     char *buf = (char *)malloc(2 * len + 1);
@@ -265,14 +270,42 @@ int parse_image_patch_info(const char *kimg, int kimg_len, patched_kimg_t *pimg)
     if (is_be() ^ kinfo->is_be) extra_size = i32swp(extra_size);
     const char *item_pos = kimg + extra_offset;
 
-    while (item_pos < kimg + extra_offset + extra_size) {
+    const char *extra_end = kimg + extra_offset + extra_size;
+    bool different_endian = is_be() ^ kinfo->is_be;
+    while (item_pos + sizeof(patch_extra_item_t) <= extra_end) {
         patch_extra_item_t *item = (patch_extra_item_t *)item_pos;
         if (strcmp(EXTRA_HDR_MAGIC, item->magic)) break;
-        if (item->type == EXTRA_TYPE_NONE) break;
+        int32_t item_type = item->type;
+        int32_t args_size = item->args_size;
+        int32_t con_size = item->con_size;
+        int32_t flags = item->flags;
+        int32_t stored_size = item->stored_size;
+        if (different_endian) {
+            item_type = i32swp(item_type);
+            args_size = i32swp(args_size);
+            con_size = i32swp(con_size);
+            flags = i32swp(flags);
+            stored_size = i32swp(stored_size);
+        }
+        if (item_type == EXTRA_TYPE_NONE) break;
+        int payload_size = (flags & EXTRA_FLAG_COMPRESSED) && stored_size > 0 ? stored_size : con_size;
+        if (args_size < 0 || payload_size < 0) {
+            tools_logw("bad embedded extra size, stop parsing extras\n");
+            break;
+        }
+        uint64_t item_size = sizeof(patch_extra_item_t) + (uint64_t)args_size + (uint64_t)payload_size;
+        if (item_size > (uint64_t)(extra_end - item_pos)) {
+            tools_logw("bad embedded extra size, stop parsing extras\n");
+            break;
+        }
+        if (pimg->embed_item_num >= EXTRA_ITEM_MAX_NUM) {
+            tools_logw("too many embedded extras, stop parsing extras\n");
+            break;
+        }
         pimg->embed_item[pimg->embed_item_num++] = item;
         item_pos += sizeof(patch_extra_item_t);
-        item_pos += item->args_size;
-        item_pos += item->con_size;
+        item_pos += args_size;
+        item_pos += payload_size;
     }
 
     return 0;
@@ -320,11 +353,17 @@ int print_image_patch_info(patched_kimg_t *pimg)
             fprintf(stdout, "args=%s\n", item->args_size > 0 ? (char *)item + sizeof(*item) : "");
             fprintf(stdout, "con_size=0x%x\n", item->con_size);
             fprintf(stdout, "flags=0x%x\n", item->flags);
+            fprintf(stdout, "stored_size=0x%x\n", extra_item_stored_size(item));
+            fprintf(stdout, "compressed_size=0x%x\n", extra_item_compressed_size(item));
 
             if (item->type == EXTRA_TYPE_KPM) {
                 kpm_info_t kpm_info = { 0 };
-                void *kpm = (kpm_info_t *)((uintptr_t)item + sizeof(patch_extra_item_t) + item->args_size);
+                uint8_t *inflated = NULL;
+                void *stored = (void *)((uintptr_t)item + sizeof(patch_extra_item_t) + item->args_size);
+                const void *kpm = get_extra_payload_for_tools(item, stored, &inflated);
+                if (!kpm) tools_loge_exit("get kpm payload error\n");
                 rc = get_kpm_info(kpm, item->con_size, &kpm_info);
+                free(inflated);
                 if (rc) tools_loge_exit("get kpm infomation error: %d\n", rc);
                 fprintf(stdout, "version=%s\n", kpm_info.version);
                 fprintf(stdout, "license=%s\n", kpm_info.license);
@@ -358,6 +397,70 @@ static void extra_append(char *kimg, const void *data, int len, int *offset)
 {
     memcpy(kimg + *offset, data, len);
     *offset += len;
+}
+
+static int extra_item_stored_size(const patch_extra_item_t *item)
+{
+    if (!(item->flags & EXTRA_FLAG_COMPRESSED)) return item->con_size;
+    return item->stored_size > 0 ? item->stored_size : item->con_size;
+}
+
+static int extra_item_compressed_size(const patch_extra_item_t *item)
+{
+    if (!(item->flags & EXTRA_FLAG_COMPRESSED)) return item->con_size;
+    int stored_size = extra_item_stored_size(item);
+    return item->compressed_size > 0 ? item->compressed_size : stored_size;
+}
+
+static void compress_extra_payload(extra_config_t *config)
+{
+    patch_extra_item_t *item = config->item;
+    if (!item || !config->data || item->con_size <= 0) return;
+
+    if (item->flags & EXTRA_FLAG_COMPRESSED) {
+        if (item->stored_size <= 0) item->stored_size = item->con_size;
+        if (item->compressed_size <= 0) item->compressed_size = item->stored_size;
+        return;
+    }
+
+    uint8_t *compressed = NULL;
+    int compressed_size = 0;
+    int rc = compress_raw_deflate((const uint8_t *)config->data, item->con_size, &compressed, &compressed_size);
+    if (rc) tools_loge_exit("compress extra %s failed: %d\n", item->name, rc);
+
+    int stored_size = align_ceil(compressed_size, EXTRA_ALIGN);
+    uint8_t *stored = calloc(1, stored_size);
+    if (!stored) tools_loge_exit("no memory for compressed extra: %s\n", item->name);
+    memcpy(stored, compressed, compressed_size);
+    free(compressed);
+
+    config->data = (const char *)stored;
+    item->flags |= EXTRA_FLAG_COMPRESSED;
+    item->stored_size = stored_size;
+    item->compressed_size = compressed_size;
+    tools_logi("compressed extra %s: 0x%x -> 0x%x (stored 0x%x)\n", item->name, item->con_size,
+               compressed_size, stored_size);
+}
+
+static const void *get_extra_payload_for_tools(patch_extra_item_t *item, const void *stored_con, uint8_t **allocated)
+{
+    *allocated = NULL;
+    if (!(item->flags & EXTRA_FLAG_COMPRESSED)) return stored_con;
+
+    int stored_size = extra_item_stored_size(item);
+    int compressed_size = extra_item_compressed_size(item);
+    if (item->con_size <= 0 || stored_size <= 0 || compressed_size <= 0 || compressed_size > stored_size) {
+        tools_logw("bad compressed extra sizes: name=%s, con=0x%x, stored=0x%x, compressed=0x%x\n", item->name,
+                   item->con_size, stored_size, compressed_size);
+        return NULL;
+    }
+
+    int rc = decompress_raw_deflate(stored_con, compressed_size, allocated, item->con_size);
+    if (rc) {
+        tools_logw("decompress extra %s failed: %d\n", item->name, rc);
+        return NULL;
+    }
+    return *allocated;
 }
 
 static void hexstr_to_bytes(const char *hexstr, size_t out_len, unsigned char *out)
@@ -512,6 +615,8 @@ int patch_update_img(const char *kimg_path, const char *kpimg_path, const char *
                     item->con_size = i32swp(item->con_size);
                     item->args_size = i32swp(item->args_size);
                     item->flags = i32swp(item->flags);
+                    item->stored_size = i32swp(item->stored_size);
+                    item->compressed_size = i32swp(item->compressed_size);
                 }
                 if (!config->set_args && item->args_size > 0) {
                     config->set_args = (char *)item + sizeof(*item);
@@ -529,6 +634,7 @@ int patch_update_img(const char *kimg_path, const char *kpimg_path, const char *
         if (config->set_name) strcpy(item->name, config->set_name);
         if (config->set_event) strcpy(item->event, config->set_event);
         if (config->priority) item->priority = config->priority;
+        compress_extra_payload(config);
     }
 
     qsort(extra_configs, extra_config_num, sizeof(extra_config_t), extra_compare);
@@ -540,7 +646,7 @@ int patch_update_img(const char *kimg_path, const char *kpimg_path, const char *
         extra_num++;
         extra_size += sizeof(patch_extra_item_t);
         extra_size += config->item->args_size;
-        extra_size += config->item->con_size;
+        extra_size += extra_item_stored_size(config->item);
     }
 
     // copy to out image
@@ -696,18 +802,18 @@ int patch_update_img(const char *kimg_path, const char *kpimg_path, const char *
         addition_pos += kvlen;
     }
 
-// append extra
+    // append extra
     int current_offset = out_img_len;
     for (int i = 0; i < extra_config_num; i++) {
         extra_config_t *config = extra_configs + i;
         patch_extra_item_t *item = config->item;
         const char *type = extra_type_str(item->type);
-        tools_logi("embedding %s, name: %s, priority: %d, event: %s, args: %s, size: 0x%x+0x%x+0x%x\n", type,
-                   item->name, item->priority, item->event, config->set_args ?: "", (int)sizeof(*item), item->args_size,
-                   item->con_size);
+        tools_logi("embedding %s, name: %s, priority: %d, event: %s, args: %s, size: 0x%x+0x%x+0x%x/0x%x\n",
+                   type, item->name, item->priority, item->event, config->set_args ?: "", (int)sizeof(*item),
+                   item->args_size, extra_item_stored_size(item), item->con_size);
 
         int args_len = item->args_size;
-        int con_len = item->con_size;
+        int stored_len = extra_item_stored_size(item);
 
         if (is_be() ^ kinfo->is_be) {
             item->type = i32swp(item->type);
@@ -715,11 +821,13 @@ int patch_update_img(const char *kimg_path, const char *kpimg_path, const char *
             item->con_size = i32swp(item->con_size);
             item->args_size = i32swp(item->args_size);
             item->flags = i32swp(item->flags);
+            item->stored_size = i32swp(item->stored_size);
+            item->compressed_size = i32swp(item->compressed_size);
         }
 
         extra_append(out_kernel_file.kimg, (void *)item, sizeof(*item), &current_offset);
         if (args_len > 0) extra_append(out_kernel_file.kimg, (void *)config->set_args, args_len, &current_offset);
-        extra_append(out_kernel_file.kimg, (void *)config->data, con_len, &current_offset);
+        extra_append(out_kernel_file.kimg, (void *)config->data, stored_len, &current_offset);
     }
 
     // record IKCONFIG gzip blob location for runtime puff inflation
