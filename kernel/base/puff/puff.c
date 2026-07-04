@@ -82,6 +82,10 @@
 #include "puff_port.h"          /* for setjmp(), longjmp(), and jmp_buf */
 #include "puff.h"               /* prototype for puff() */
 
+#ifndef PUFF_NAME
+#define PUFF_NAME puff
+#endif
+
 #define local static            /* for local function definitions */
 
 /*
@@ -535,6 +539,34 @@ local int codes(struct state *s,
  */
 local int fixed(struct state *s)
 {
+#ifdef PUFF_NO_STATIC_FIXED
+    int symbol;
+    short lengths[FIXLCODES];
+    short lencnt[MAXBITS+1], lensym[FIXLCODES];
+    short distcnt[MAXBITS+1], distsym[MAXDCODES];
+    struct huffman lencode, distcode;
+
+    lencode.count = lencnt;
+    lencode.symbol = lensym;
+    distcode.count = distcnt;
+    distcode.symbol = distsym;
+
+    for (symbol = 0; symbol < 144; symbol++)
+        lengths[symbol] = 8;
+    for (; symbol < 256; symbol++)
+        lengths[symbol] = 9;
+    for (; symbol < 280; symbol++)
+        lengths[symbol] = 7;
+    for (; symbol < FIXLCODES; symbol++)
+        lengths[symbol] = 8;
+    construct(&lencode, lengths, FIXLCODES);
+
+    for (symbol = 0; symbol < MAXDCODES; symbol++)
+        lengths[symbol] = 5;
+    construct(&distcode, lengths, MAXDCODES);
+
+    return codes(s, &lencode, &distcode);
+#else
     static int virgin = 1;
     static short lencnt[MAXBITS+1], lensym[FIXLCODES];
     static short distcnt[MAXBITS+1], distsym[MAXDCODES];
@@ -573,6 +605,7 @@ local int fixed(struct state *s)
 
     /* decode data until end-of-block code */
     return codes(s, &lencode, &distcode);
+#endif
 }
 
 /*
@@ -790,10 +823,10 @@ local int dynamic(struct state *s)
  *   block (if it was a fixed or dynamic block) are undefined and have no
  *   expected values to check.
  */
-int puff(unsigned char *dest,           /* pointer to destination pointer */
-         unsigned long *destlen,        /* amount of output space */
-         const unsigned char *source,   /* pointer to source data pointer */
-         unsigned long *sourcelen)      /* amount of input available */
+int PUFF_NAME(unsigned char *dest,           /* pointer to destination pointer */
+              unsigned long *destlen,        /* amount of output space */
+              const unsigned char *source,   /* pointer to source data pointer */
+              unsigned long *sourcelen)      /* amount of input available */
 {
     struct state s;             /* input/output state */
     int last, type;             /* block information */

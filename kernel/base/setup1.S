@@ -148,16 +148,54 @@ start_prepare:
     add x1, x19, x20
     bl memcpy8
 
-    // uint64_t start_img_size = setup_preset.kpimg_size - (_kp_start - _link_base)
-    ldr x22, [x10, #setup_kpimg_size_offset]
+    // uint64_t payload_offset = _kp_start - _link_base
     adrp x23, _kp_start
     add x23, x23, :lo12:_kp_start
     adrp x24, _link_base
     add x24, x24, :lo12:_link_base
     sub x23, x23, x24
+
+    // uint64_t stored_kpimg_size = setup_preset.kpimg_size
+    ldr x24, [x10, #setup_kpimg_size_offset]
+
+    // if (!(setup_preset.kpimg_flags & KPIMG_FLAG_COMPRESSED)) goto raw copy
+    ldr x13, [x10, #setup_kpimg_flags_offset]
+    tbz x13, #0, .copy_raw_kpimg_payload
+
+    // start_img_size = setup_preset.kpimg_raw_size - payload_offset
+    ldr x22, [x10, #setup_kpimg_raw_size_offset]
     sub x22, x22, x23
 
-    // map_data.start_img_size = start_img_size;
+    // map_data.start_img_size = start_img_size
+    str x22, [x9, #map_start_img_size_offset]
+
+    // Preserve extra_size across the C inflate call.
+    ldr x23, [x10, #setup_extra_size_offset]
+
+    // setup_inflate(kernel_pa + start_offset, start_img_size, _kp_start, setup_preset.kpimg_compressed_size)
+    add x0, x19, x21
+    mov x1, x22
+    adrp x2, _kp_start
+    add x2, x2, :lo12:_kp_start
+    ldr x3, [x10, #setup_kpimg_compressed_size_offset]
+    bl setup_inflate
+    cbnz w0, .kpimg_inflate_error
+
+    // memcpy(kernel_pa + start_offset + start_img_size, _link_base + stored_kpimg_size, extra_size)
+    add x0, x19, x21
+    add x0, x0, x22
+    adrp x1, _link_base
+    add x1, x1, :lo12:_link_base
+    add x1, x1, x24
+    mov x2, x23
+    bl rmemcpy32
+    b .start_payload_ready
+
+.copy_raw_kpimg_payload:
+    // start_img_size = setup_preset.kpimg_size - payload_offset
+    sub x22, x24, x23
+
+    // map_data.start_img_size = start_img_size
     str x22, [x9, #map_start_img_size_offset]
 
     // start and extra
@@ -168,6 +206,13 @@ start_prepare:
     ldr x2, [x10, #setup_extra_size_offset]
     add x2, x2, x22
     bl rmemcpy32
+    b .start_payload_ready
+
+.kpimg_inflate_error:
+    wfe
+    b .kpimg_inflate_error
+
+.start_payload_ready:
 
     // Restore
     ldp x23, x24, [sp], 16 

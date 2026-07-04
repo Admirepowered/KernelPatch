@@ -25,6 +25,9 @@ SECTIONS
         base/setup1.o(.entry.text)
         base/setup1.o(.text)
         base/setup.o(.text)
+        base/setup_puff.o(.text)
+        base/setup_puff.o(.rodata*)
+        base/setup_setjmp_aarch64.o(.text)
         _setup_end = .;
     }
 

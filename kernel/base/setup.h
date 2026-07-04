@@ -8,7 +8,7 @@
 
 #include "./preset.h"
 
-#define STACK_SIZE 0x800
+#define STACK_SIZE 0xa00
 
 #ifndef __ASSEMBLY__
 

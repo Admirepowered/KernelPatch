@@ -29,6 +29,17 @@ setup_header_t header __section(.setup.header) = { .magic = KP_MAGIC,
 
 setup_preset_t setup_preset __section(.setup.preset) = { 0 };
 
+int setup_puff(unsigned char *dest, unsigned long *destlen, const unsigned char *source, unsigned long *sourcelen);
+
+int setup_inflate(void *dest, unsigned long destlen, const void *source, unsigned long sourcelen)
+{
+    unsigned long out_len = destlen;
+    unsigned long in_len = sourcelen;
+    int rc = setup_puff(dest, &out_len, source, &in_len);
+    if (rc) return rc;
+    return out_len == destlen ? 0 : -1;
+}
+
 struct
 {
     uint8_t fp[STACK_SIZE];

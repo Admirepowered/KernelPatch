@@ -36,6 +36,7 @@ BASE_SRCS += base/hmem.c
 BASE_SRCS += base/predata.c 
 BASE_SRCS += base/puff/puff.c
 BASE_SRCS += base/puff/setjmp_aarch64.S
+BASE_SRCS += base/setup_setjmp_aarch64.S
 BASE_SRCS += base/symbol.c 
 BASE_SRCS += base/baselib.c 
 BASE_SRCS += base/sha256.c 
@@ -54,6 +55,7 @@ SRCS += $(LINUX_SRCS)
 
 OBJS := $(SRCS:.c=.o)
 OBJS := $(OBJS:.S=.o)
+OBJS += base/setup_puff.o
 
 all: hdr ${TARGET}
 
@@ -71,6 +73,9 @@ base/sha256.o: base/sha256.c
 
 base/puff/puff.o: base/puff/puff.c
 	${CC} $(CFLAGS) $(INCLUDE) -c -O2 -DINFLATE_ALLOW_INVALID_DISTANCE_TOOFAR_ARRR -o $@ $<
+
+base/setup_puff.o: base/puff/puff.c
+	${CC} $(CFLAGS) $(INCLUDE) -c -O2 -DINFLATE_ALLOW_INVALID_DISTANCE_TOOFAR_ARRR -DPUFF_NAME=setup_puff -Dsetjmp=setup_setjmp -Dlongjmp=setup_longjmp -DPUFF_NO_STATIC_FIXED -o $@ $<
 
 %.o: %.S
 	${CC} $(CFLAGS) $(INCLUDE) -c -o $@ $<

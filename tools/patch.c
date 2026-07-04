@@ -129,6 +129,7 @@ static int extra_item_stored_size(const patch_extra_item_t *item);
 static int extra_item_compressed_size(const patch_extra_item_t *item);
 static void compress_extra_payload(extra_config_t *config);
 static const void *get_extra_payload_for_tools(patch_extra_item_t *item, const void *stored_con, uint8_t **allocated);
+static int compress_kpimg_payload(char **kpimg, int *kpimg_len, int *kpimg_raw_len, int *kpimg_compressed_size);
 
 static char *bytes_to_hexstr(const unsigned char *data, int len)
 {
@@ -153,6 +154,11 @@ void print_preset_info(preset_t *preset)
     fprintf(stdout, "version=0x%x\n", ver_num);
     fprintf(stdout, "compile_time=%s\n", header->compile_time);
     fprintf(stdout, "config=%s,%s\n", is_android ? "android" : "linux", is_debug ? "debug" : "release");
+    fprintf(stdout, "kpimg_flags=0x%llx\n", (unsigned long long)setup->kpimg_flags);
+    if (setup->kpimg_flags & KPIMG_FLAG_COMPRESSED) {
+        fprintf(stdout, "kpimg_raw_size=0x%llx\n", (unsigned long long)setup->kpimg_raw_size);
+        fprintf(stdout, "kpimg_compressed_size=0x%llx\n", (unsigned long long)setup->kpimg_compressed_size);
+    }
     fprintf(stdout, "superkey=%s\n", setup->superkey);
 
     // todo: remove compat version
@@ -463,6 +469,47 @@ static const void *get_extra_payload_for_tools(patch_extra_item_t *item, const v
     return *allocated;
 }
 
+static int compress_kpimg_payload(char **kpimg, int *kpimg_len, int *kpimg_raw_len, int *kpimg_compressed_size)
+{
+    *kpimg_raw_len = *kpimg_len;
+    *kpimg_compressed_size = 0;
+
+    if (*kpimg_len <= KPIMG_PAYLOAD_OFFSET) {
+        tools_logw("kpimg too small for payload compression: size=0x%x\n", *kpimg_len);
+        return 0;
+    }
+
+    int payload_len = *kpimg_len - KPIMG_PAYLOAD_OFFSET;
+    uint8_t *compressed = NULL;
+    int compressed_size = 0;
+    int rc = compress_raw_deflate((const uint8_t *)(*kpimg + KPIMG_PAYLOAD_OFFSET), payload_len, &compressed,
+                                  &compressed_size);
+    if (rc) tools_loge_exit("compress kpimg payload failed: %d\n", rc);
+
+    int stored_payload_size = align_ceil(compressed_size, 0x10);
+    int stored_kpimg_size = KPIMG_PAYLOAD_OFFSET + stored_payload_size;
+    if (stored_kpimg_size >= *kpimg_len) {
+        tools_logw("kpimg payload compression skipped: raw=0x%x, compressed=0x%x\n", payload_len,
+                   compressed_size);
+        free(compressed);
+        return 0;
+    }
+
+    char *stored = calloc(1, stored_kpimg_size);
+    if (!stored) tools_loge_exit("no memory for compressed kpimg\n");
+    memcpy(stored, *kpimg, KPIMG_PAYLOAD_OFFSET);
+    memcpy(stored + KPIMG_PAYLOAD_OFFSET, compressed, compressed_size);
+    free(compressed);
+    free(*kpimg);
+
+    *kpimg = stored;
+    *kpimg_len = stored_kpimg_size;
+    *kpimg_compressed_size = compressed_size;
+    tools_logi("compressed kpimg payload: 0x%x -> 0x%x (kpimg 0x%x -> 0x%x)\n", payload_len, compressed_size,
+               *kpimg_raw_len, *kpimg_len);
+    return KPIMG_FLAG_COMPRESSED;
+}
+
 static void hexstr_to_bytes(const char *hexstr, size_t out_len, unsigned char *out)
 {
     for (size_t i = 0; i < out_len; i++) {
@@ -562,6 +609,9 @@ int patch_update_img(const char *kimg_path, const char *kpimg_path, const char *
     char *kpimg = NULL;
     int kpimg_len = 0;
     read_file_align(kpimg_path, &kpimg, &kpimg_len, 0x10);
+    int kpimg_raw_len = kpimg_len;
+    int kpimg_compressed_size = 0;
+    int kpimg_flags = compress_kpimg_payload(&kpimg, &kpimg_len, &kpimg_raw_len, &kpimg_compressed_size);
 
     // extra
     int extra_size = 0;
@@ -689,6 +739,9 @@ int patch_update_img(const char *kimg_path, const char *kpimg_path, const char *
     setup->kernel_version.patch = kallsym.version.patch;
     setup->kimg_size = ori_kimg_len;
     setup->kpimg_size = kpimg_len;
+    setup->kpimg_flags = kpimg_flags;
+    setup->kpimg_raw_size = kpimg_raw_len;
+    setup->kpimg_compressed_size = kpimg_compressed_size;
 
     setup->kernel_size = kinfo->kernel_size;
     setup->page_shift = kinfo->page_shift;
@@ -734,6 +787,7 @@ int patch_update_img(const char *kimg_path, const char *kpimg_path, const char *
 
     if ((is_be() ^ kinfo->is_be)) {
         setup->kimg_size = i64swp(setup->kimg_size);
+        setup->kpimg_size = i64swp(setup->kpimg_size);
         setup->kernel_size = i64swp(setup->kernel_size);
         setup->page_shift = i64swp(setup->page_shift);
         setup->setup_offset = i64swp(setup->setup_offset);
@@ -746,6 +800,9 @@ int patch_update_img(const char *kimg_path, const char *kpimg_path, const char *
         setup->symbol_lookup_anchor_offset = i64swp(setup->symbol_lookup_anchor_offset);
         setup->paging_init_offset = i64swp(setup->paging_init_offset);
         setup->printk_offset = i64swp(setup->printk_offset);
+        setup->kpimg_flags = i64swp(setup->kpimg_flags);
+        setup->kpimg_raw_size = i64swp(setup->kpimg_raw_size);
+        setup->kpimg_compressed_size = i64swp(setup->kpimg_compressed_size);
     }
 
     // map symbol
