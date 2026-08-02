@@ -561,6 +561,26 @@ static int find_markers_internal(kallsym_t *info, char *img, int32_t imglen, int
     }
 
     int32_t marker_end = cand + count * elem_size + elem_size;
+
+    // Validate marker values read forward. Each marker is a byte offset into
+    // kallsyms_names, which ends at markers_offset (== cand), so every value
+    // must be non-negative, strictly less than cand, and the sequence must be
+    // non-decreasing. A wrong elem_size (e.g. reading 4-byte markers as 8-byte
+    // on a vendor 4.19 kernel that uses unsigned int markers) merges adjacent
+    // entries into huge values that still pass the backward decreasing scan
+    // above but are nonsense here; reject so find_markers() falls back to the
+    // other elem_size instead of trusting a false positive.
+    int64_t prev = -1;
+    for (int i = 0; i < count; i++) {
+        int64_t v = int_unpack(img + cand + i * elem_size, elem_size, info->is_be);
+        if (v < 0 || v >= cand || v < prev) {
+            tools_logw("kallsyms_markers elem_size %d rejected at [%d] (val 0x%llx)\n", elem_size, i,
+                       (unsigned long long)v);
+            return -1;
+        }
+        prev = v;
+    }
+
     info->kallsyms_markers_offset = cand;
     info->_marker_num = count;
     info->kallsyms_markers_elem_size = elem_size;
