@@ -482,17 +482,21 @@ int selinux_hide_post_fs_data(const char *args)
     if (lib_strcmp(args, "before") == 0 || args[0] == '\0') {
         log_boot("selinux_hide: post-fs-data before\n");
 
-        /* The live policy is still the untouched boot policy here: deep-copy it
-         * so the context/access/setprocattr hooks answer against the clean policy
-         * even after apd/Magisk reloads it. */
-        int src = selinux_sepolicy_snapshot();
-        log_boot("selinux_sepolicy: snapshot rc=%d\n", src);
-
         struct file *filp = filp_open(KP_SELINUX_HIDE_FILE, KP_O_RDONLY, 0);
         if (!IS_ERR(filp)) {
             filp_close(filp, 0);
             log_boot("selinux_hide: %s exists, enabling\n", KP_SELINUX_HIDE_FILE);
+
+            /* Resolve ss/ symbols + install hooks FIRST: the snapshot below needs
+             * the resolved kp_policydb_read/kp_policydb_load_isids. */
             selinux_hide_init();
+
+            /* The live policy is still the untouched boot policy here: deep-copy
+             * it so the context/access/setprocattr hooks answer against the clean
+             * policy even after apd/Magisk reloads it. */
+            int src = selinux_sepolicy_snapshot();
+            log_boot("selinux_sepolicy: snapshot rc=%d\n", src);
+
             int rc = selinux_hide_enable();
             log_boot("selinux_hide: enable rc: %d\n", rc);
         }

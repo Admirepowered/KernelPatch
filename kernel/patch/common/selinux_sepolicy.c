@@ -824,19 +824,22 @@ int selinux_sepolicy_init(void)
         return -EOPNOTSUPP;
     }
 
-    kp_policydb_read = (policydb_read_fn)kallsyms_lookup_name("policydb_read");
-    kp_policydb_load_isids = (policydb_load_isids_fn)kallsyms_lookup_name("policydb_load_isids");
-    kp_policydb_destroy = (policydb_destroy_fn)kallsyms_lookup_name("policydb_destroy");
+    /* ss/ internals: try the exact kallsyms name first, then fall back to the
+     * suffix-tolerant lookup for clang-LTO kernels that mangle static names to
+     * <name>.<n> / <name>.llvm.<hash>. */
+    kp_policydb_read = (policydb_read_fn)lookup_name_with_suffix("policydb_read");
+    kp_policydb_load_isids = (policydb_load_isids_fn)lookup_name_with_suffix("policydb_load_isids");
+    kp_policydb_destroy = (policydb_destroy_fn)lookup_name_with_suffix("policydb_destroy");
 
     /* 6.4+ ss/ internals for the *_with_policy wrappers. */
-    kp_string_to_context_struct = (string_to_context_struct_fn)kallsyms_lookup_name("string_to_context_struct");
-    kp_sidtab_context_to_sid = (sidtab_context_to_sid_fn)kallsyms_lookup_name("sidtab_context_to_sid");
-    kp_sidtab_search_entry = (sidtab_search_entry_fn)kallsyms_lookup_name("sidtab_search_entry");
-    kp_sidtab_sid2str_get = (sidtab_sid2str_get_fn)kallsyms_lookup_name("sidtab_sid2str_get");
-    kp_sidtab_sid2str_put = (sidtab_sid2str_put_fn)kallsyms_lookup_name("sidtab_sid2str_put");
-    kp_context_struct_to_string = (context_struct_to_string_fn)kallsyms_lookup_name("context_struct_to_string");
-    kp_sidtab_search_core = (sidtab_search_core_fn)kallsyms_lookup_name("sidtab_search_core");
-    kp_context_struct_compute_av = (context_struct_compute_av_fn)kallsyms_lookup_name("context_struct_compute_av");
+    kp_string_to_context_struct = (string_to_context_struct_fn)lookup_name_with_suffix("string_to_context_struct");
+    kp_sidtab_context_to_sid = (sidtab_context_to_sid_fn)lookup_name_with_suffix("sidtab_context_to_sid");
+    kp_sidtab_search_entry = (sidtab_search_entry_fn)lookup_name_with_suffix("sidtab_search_entry");
+    kp_sidtab_sid2str_get = (sidtab_sid2str_get_fn)lookup_name_with_suffix("sidtab_sid2str_get");
+    kp_sidtab_sid2str_put = (sidtab_sid2str_put_fn)lookup_name_with_suffix("sidtab_sid2str_put");
+    kp_context_struct_to_string = (context_struct_to_string_fn)lookup_name_with_suffix("context_struct_to_string");
+    kp_sidtab_search_core = (sidtab_search_core_fn)lookup_name_with_suffix("sidtab_search_core");
+    kp_context_struct_compute_av = (context_struct_compute_av_fn)lookup_name_with_suffix("context_struct_compute_av");
 
     /* Learn offsetof(struct selinux_policy, policydb) and (fake_state path) the
      * state->policy field offset from the live policy. */
