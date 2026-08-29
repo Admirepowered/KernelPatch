@@ -167,14 +167,19 @@ void select_map_area(kallsym_t *kallsym, char *image_buf, int imglen, int32_t *m
     }
     tools_logi("select map anchor: %s, offset: 0x%08x\n", selected, addr);
 
+    // The hole must hold the whole map section (map_data + map code,
+    // currently ~0xf10 with the scratch machinery) so the map_prepare copy
+    // never spills over the NOP-synced area into untouched kernel code.
+    // start_prepare backs up and restore_map restores exactly map_max_size
+    // bytes, so every NOPed byte comes back.
     if (!is_gki){
         // For non-GKI kernels, we can directly use the area starting from a cold text symbol for mapping.
         *map_start = align_ceil(addr, 16);
-        *max_size = 0x800;
+        *max_size = MAP_MAX_SIZE;
         return;
     }
     *map_start = align_floor(addr, 16);
-    *max_size = 0x800;
+    *max_size = MAP_MAX_SIZE;
 
 #define NOP 0xD503201F
 #define PAC 0xd503233f

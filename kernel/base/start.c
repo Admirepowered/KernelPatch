@@ -725,17 +725,21 @@ int __attribute__((section(".start.text"))) __noinline start(uint64_t kimage_vof
     predata_init();
     symbol_init();
     rc = patch();
-    // >= GKI 1.0 kernels take the scratch path: their _paging_init epilogue
-    // lives in the restored map anchor and must never execute, so return to
-    // the kernel's paging_init caller directly, restoring _paging_init's
-    // callee-saved registers from its frame ([our x29] = its x29 (P); its
-    // saved x19-x28 at P+16..P+88; the kernel's return address at P+8; the
-    // caller's sp at P+0x280 = frame 0x290 with x29 = sp + 0x10). Legacy
-    // kernels (< 5.4) return through the normal epilogue below, which
-    // executes restored anchor bytes - verified working on 4.19/4.9
-    // devices (the restored instructions at the epilogue offset are benign
-    // there).
-    if (kver >= VERSION(5, 4, 0)) {
+    // Return to the kernel's paging_init caller directly, restoring
+    // _paging_init's callee-saved registers from its frame ([our x29] = its
+    // x29 (P); its saved x19-x28 at P+16..P+88; the kernel's return address
+    // at P+8; the caller's sp at P+0x280 = frame 0x290 with x29 = sp + 0x10
+    // — the same layout on the scratch and legacy _paging_init paths, since
+    // it is the same compiled function entered via blr in both cases).
+    // This bypasses _paging_init's epilogue, which lives in the RESTORED map
+    // anchor: with the map section (~0xf10, scratch machinery included)
+    // larger than the carved hole, the epilogue position can land
+    // mid-function inside e.g. do_tcp_getsockopt, and executing those
+    // restored native bytes kills 5.10 GKI before the console is up
+    // (verified in QEMU).  4.x once boot-looped here, but those builds also
+    // ran the scratch path on 4.9, which hangs 4.x on its own — the tail
+    // return itself was never the isolated culprit; on the pure legacy path
+    // it restores exactly the registers and sp the normal epilogue would.
     __asm__ volatile(
         "ldr x10, [x29]\n"
         "ldp x19, x20, [x10, #16]\n"
@@ -750,6 +754,4 @@ int __attribute__((section(".start.text"))) __noinline start(uint64_t kimage_vof
         : : : "x10", "x19", "x20", "x21", "x22", "x23", "x24", "x25", "x26",
               "x27", "x28", "x29", "x30", "memory");
     __builtin_unreachable();
-    }
-    return rc;
 }
