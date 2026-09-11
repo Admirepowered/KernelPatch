@@ -75,6 +75,14 @@ void unhook_compat_syscalln(int nr, void *before, void *after);
 
 自动为当前内核选择最合适的 hook 方式。
 
+在有 syscall wrapper 的内核上，`hook_syscalln` 会优先在 `el0_svc_common`（native
+与 compat32 所有 syscall 共用的 C 入口）上安装一个 inline hook，由它统一分发所有
+注册项。这样既不修改 syscall 表，所有 syscall 也走同一段 trampoline，开销一致。
+如果无法解析 `el0_svc_common`（符号缺失、无 syscall wrapper），会自动回退到逐
+syscall 的 `fp_hook_syscalln` / `inline_hook_syscalln` 机制。
+
+`syscall_hook_global_enabled()` 可用于查询当前处于哪种模式。
+
 ## 回调签名
 
 Syscall hook 回调使用与 inline hook 相同的 `hook_fargs*_t` 类型。对于有 4 个参数的 syscall，使用 `hook_fargs4_t`：
@@ -178,6 +186,12 @@ void before_openat(hook_fargs4_t *args, void *udata)
     args->ret = (uint64_t)-EPERM;
 }
 ```
+
+> **全局 `el0_svc_common` 分发器不支持 `skip_origin`。** 在那里跳过 origin 会一并
+> 跳过 `el0_svc_common` 在 handler 返回后要做的 syscall 退出处理。只有逐 syscall
+> 机制（`hook_syscalln_legacy`、`fp_hook_syscalln`、`inline_hook_syscalln`）会响应
+> `skip_origin`。如果需要短路某个 syscall，请改用这些接口注册，或在 handler 内部
+> 阻止其效果。
 
 ## 注意事项
 

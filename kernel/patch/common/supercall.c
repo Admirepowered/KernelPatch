@@ -438,7 +438,11 @@ int supercall_install()
 {
     int rc = 0;
 
-    hook_err_t err = hook_syscalln(__NR_supercall, 6, before, 0, 0);
+    /* The magic supercall must short-circuit the real syscall, and only the
+     * per-syscall hook honours skip_origin: the global el0_svc_common dispatcher
+     * cannot, because skipping origin there would also skip the syscall-exit
+     * work el0_svc_common performs after invoke_syscall. */
+    hook_err_t err = hook_syscalln_legacy(__NR_supercall, 6, before, 0, 0);
     if (err) {
         log_boot("install supercall hook error: %d\n", err);
         rc = err;

@@ -166,4 +166,25 @@ hook_err_t hook_compat_syscalln(int nr, int narg, void *before, void *after, voi
 
 void unhook_compat_syscalln(int nr, void *before, void *after);
 
+/**
+ * @brief Install the single el0_svc_common hook that backs hook_syscalln.
+ *
+ * Must run after bypass_kcfi() and after syscall_init() so the syscall-wrapper
+ * detection is available. On failure (or when el0_svc_common cannot be
+ * resolved) hook_syscalln transparently keeps using the per-syscall mechanism.
+ */
+void syscall_dispatch_init(void);
+
+/**
+ * @brief Non-zero once the global el0_svc_common hook is active.
+ */
+int syscall_hook_global_enabled(void);
+
+/**
+ * @brief Per-syscall hook that preserves the original mechanism, including
+ * skip_origin support. Use only when a before callback must short-circuit the
+ * syscall (the magic supercall); the global dispatcher does not support it.
+ */
+hook_err_t hook_syscalln_legacy(int nr, int narg, void *before, void *after, void *udata);
+
 #endif

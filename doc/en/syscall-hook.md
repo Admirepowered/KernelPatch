@@ -75,6 +75,16 @@ void unhook_compat_syscalln(int nr, void *before, void *after);
 
 These automatically select the best hooking method for the current kernel.
 
+On kernels with syscall wrappers, `hook_syscalln` first tries to install a single
+inline hook on `el0_svc_common`, the C entry every syscall (native and compat32)
+passes through. Registrations are dispatched from that one hook, so the syscall
+table is never modified and all syscalls share the same trampoline overhead.
+If `el0_svc_common` cannot be resolved (missing symbol, no syscall wrapper), it
+transparently falls back to the per-syscall `fp_hook_syscalln` /
+`inline_hook_syscalln` mechanism.
+
+`syscall_hook_global_enabled()` reports which mode is active.
+
 ## Callback Signature
 
 Syscall hook callbacks use the same `hook_fargs*_t` types as inline hooks. For a syscall with 4 arguments, use `hook_fargs4_t`:
@@ -178,6 +188,13 @@ void before_openat(hook_fargs4_t *args, void *udata)
     args->ret = (uint64_t)-EPERM;
 }
 ```
+
+> **Not supported by the global `el0_svc_common` dispatcher.** Skipping origin
+> there would also skip the syscall-exit work `el0_svc_common` performs after the
+> handler returns. `skip_origin` is honoured only by the per-syscall mechanism
+> (`hook_syscalln_legacy`, `fp_hook_syscalln`, `inline_hook_syscalln`). If you
+> need to short-circuit a syscall, register it through one of those, or prevent
+> the effect from inside the handler instead.
 
 ## Notes
 
