@@ -181,10 +181,25 @@ void syscall_dispatch_init(void);
 int syscall_hook_global_enabled(void);
 
 /**
+ * @brief Register the uid gate the dispatcher evaluates once per syscall before
+ * dispatching any callback. Returning 0 from @param gate suppresses every
+ * callback for that syscall (except slots registered with bypass_gate), so
+ * callbacks do not each need their own root check. Passing NULL disables it.
+ */
+void syscall_hook_set_gate(int (*gate)(void));
+
+/**
  * @brief Per-syscall hook that preserves the original mechanism, including
- * skip_origin support. Use only when a before callback must short-circuit the
- * syscall (the magic supercall); the global dispatcher does not support it.
+ * skip_origin support.
  */
 hook_err_t hook_syscalln_legacy(int nr, int narg, void *before, void *after, void *udata);
+
+/**
+ * @brief Register a syscall hook whose before callback may set skip_origin to
+ * suppress the real syscall. Uses the global dispatcher when it is hooked at
+ * invoke_syscall (handler granularity), otherwise falls back to the per-syscall
+ * mechanism. Used by the magic supercall.
+ */
+hook_err_t hook_syscalln_override(int nr, int narg, void *before, void *after, void *udata);
 
 #endif

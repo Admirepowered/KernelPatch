@@ -75,13 +75,17 @@ void unhook_compat_syscalln(int nr, void *before, void *after);
 
 自动为当前内核选择最合适的 hook 方式。
 
-在有 syscall wrapper 的内核上，`hook_syscalln` 会优先在 `el0_svc_common`（native
-与 compat32 所有 syscall 共用的 C 入口）上安装一个 inline hook，由它统一分发所有
-注册项。这样既不修改 syscall 表，所有 syscall 也走同一段 trampoline，开销一致。
-如果无法解析 `el0_svc_common`（符号缺失、无 syscall wrapper），会自动回退到逐
-syscall 的 `fp_hook_syscalln` / `inline_hook_syscalln` 机制。
+在有 syscall wrapper 的内核上，`hook_syscalln` 会优先在 `invoke_syscall`（native
+与 compat32 所有 syscall 都会经过，位置在 `syscall_trace_enter` 之后、
+`syscall_trace_exit` 之前）上安装一个 inline hook，由它统一分发所有注册项。这样
+既不修改 syscall 表，所有 syscall 也走同一段 trampoline，开销一致，没有逐 syscall
+的时序特征。若 `invoke_syscall` 不是符号（被内联等情况），回退到 hook
+`el0_svc_common`，再不行才回退到逐 syscall 的 `fp_hook_syscalln` /
+`inline_hook_syscalln` 机制。
 
-`syscall_hook_global_enabled()` 可用于查询当前处于哪种模式。
+`syscall_hook_global_enabled()` 可查询全局 hook 是否生效。`hook_syscalln_override`
+与 `hook_syscalln` 类似，但允许回调设置 `skip_origin`：当 hook 落在 `invoke_syscall`
+上时生效，否则回退到逐 syscall 机制。
 
 ## 回调签名
 
@@ -187,11 +191,12 @@ void before_openat(hook_fargs4_t *args, void *udata)
 }
 ```
 
-> **全局 `el0_svc_common` 分发器不支持 `skip_origin`。** 在那里跳过 origin 会一并
-> 跳过 `el0_svc_common` 在 handler 返回后要做的 syscall 退出处理。只有逐 syscall
-> 机制（`hook_syscalln_legacy`、`fp_hook_syscalln`、`inline_hook_syscalln`）会响应
-> `skip_origin`。如果需要短路某个 syscall，请改用这些接口注册，或在 handler 内部
-> 阻止其效果。
+> 需要短路 syscall 的回调请用 `hook_syscalln_override` 注册，而不是
+> `hook_syscalln`。只有当全局分发器落在 `invoke_syscall`（handler 粒度）时才会
+> 响应 `skip_origin`：此时只跳过真正的 syscall，`el0_svc_common` 的进入/退出处理
+> 照常执行。如果分发器只能挂在 `el0_svc_common`，或未生效，
+> `hook_syscalln_override` 会回退到同样支持 `skip_origin` 的逐 syscall 机制。
+> `hook_syscalln` 本身不响应 `skip_origin`。
 
 ## 注意事项
 

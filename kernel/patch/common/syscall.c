@@ -333,9 +333,11 @@ KP_EXPORT_SYMBOL(inline_unwrap_syscalln);
  * reads regs->regs[] exactly as it did under the per-syscall hook, and
  * syscall_argn_p() still writes straight into the live register frame.
  *
- * skip_origin (only used by the magic supercall) is NOT supported here: honouring
- * it would skip el0_svc_common entirely, including its syscall-exit work. Callers
- * that need it must use hook_syscalln_legacy().
+ * skip_origin (only used by the magic supercall) is honoured only when the hook
+ * target is invoke_syscall, i.e. at handler granularity: there it suppresses the
+ * real syscall while el0_svc_common still runs syscall_trace_enter/exit around it.
+ * If only el0_svc_common could be resolved, skip_origin is refused (it would skip
+ * that whole function) and such callers fall back to hook_syscalln_legacy().
  */
 #define SYSCALL_HOOK_SLOT_NUM 64
 /* More than this many callbacks on one syscall number would be unusual; the
@@ -343,6 +345,7 @@ KP_EXPORT_SYMBOL(inline_unwrap_syscalln);
 #define SYSCALL_HOOK_MAX_MATCH 16
 
 typedef void (*syscall_hook_cb_t)(void *fargs, void *udata);
+typedef int (*syscall_hook_gate_t)(void);
 
 typedef struct
 {
@@ -351,6 +354,8 @@ typedef struct
     void *before;
     void *after;
     void *udata;
+    int8_t allow_skip;
+    int8_t bypass_gate;
     volatile int8_t state;
 } syscall_hook_slot_t;
 
@@ -359,6 +364,11 @@ static syscall_hook_slot_t syscall_hooks[SYSCALL_HOOK_SLOT_NUM];
  * nothing is registered. */
 static volatile int syscall_hook_high = 0;
 static volatile int syscall_hook_global = 0;
+/* 1 when hooked at invoke_syscall (handler granularity), 0 when hooked at
+ * el0_svc_common's entry. Only the former can honour skip_origin. */
+static volatile int syscall_hook_handler_granular = 0;
+/* Optional uid gate, evaluated once per syscall for all callbacks. */
+static syscall_hook_gate_t syscall_hook_gate = 0;
 static spinlock_t syscall_hook_lock;
 
 struct syscall_hook_snapshot
@@ -366,6 +376,7 @@ struct syscall_hook_snapshot
     syscall_hook_cb_t before;
     syscall_hook_cb_t after;
     void *udata;
+    int8_t allow_skip;
 };
 
 static void syscall_hook_barrier(void)
@@ -373,7 +384,7 @@ static void syscall_hook_barrier(void)
     asm volatile("dsb ish" ::: "memory");
 }
 
-static int syscall_hook_collect(int nr, int is_compat, struct syscall_hook_snapshot *out, int max)
+static int syscall_hook_collect(int nr, int is_compat, int gate_ok, struct syscall_hook_snapshot *out, int max)
 {
     int n = 0;
     int high = syscall_hook_high;
@@ -382,16 +393,19 @@ static int syscall_hook_collect(int nr, int is_compat, struct syscall_hook_snaps
     for (int i = 0; i < high; i++) {
         if (syscall_hooks[i].state != CHAIN_ITEM_STATE_READY) continue;
         if (syscall_hooks[i].nr != nr || syscall_hooks[i].is_compat != is_compat) continue;
+        if (!gate_ok && !syscall_hooks[i].bypass_gate) continue;
         if (n >= max) break;
         out[n].before = (syscall_hook_cb_t)syscall_hooks[i].before;
         out[n].after = (syscall_hook_cb_t)syscall_hooks[i].after;
         out[n].udata = syscall_hooks[i].udata;
+        out[n].allow_skip = syscall_hooks[i].allow_skip;
         n++;
     }
     return n;
 }
 
-static hook_err_t syscall_hook_add(int nr, int is_compat, void *before, void *after, void *udata)
+static hook_err_t syscall_hook_add(int nr, int is_compat, void *before, void *after, void *udata, int allow_skip,
+                                   int bypass_gate)
 {
     unsigned long flags = kp_private_spin_lock(&syscall_hook_lock);
 
@@ -413,6 +427,8 @@ static hook_err_t syscall_hook_add(int nr, int is_compat, void *before, void *af
         syscall_hooks[i].udata = udata;
         syscall_hooks[i].before = before;
         syscall_hooks[i].after = after;
+        syscall_hooks[i].allow_skip = allow_skip;
+        syscall_hooks[i].bypass_gate = bypass_gate;
         syscall_hook_barrier();
         syscall_hooks[i].state = CHAIN_ITEM_STATE_READY;
         if (i + 1 > syscall_hook_high) syscall_hook_high = i + 1;
@@ -442,6 +458,8 @@ static void syscall_hook_remove(int nr, int is_compat, void *before, void *after
         syscall_hooks[i].udata = 0;
         syscall_hooks[i].before = 0;
         syscall_hooks[i].after = 0;
+        syscall_hooks[i].allow_skip = 0;
+        syscall_hooks[i].bypass_gate = 0;
         syscall_hook_barrier();
         syscall_hooks[i].state = CHAIN_ITEM_STATE_EMPTY;
         break;
@@ -455,6 +473,14 @@ int syscall_hook_global_enabled(void)
     return syscall_hook_global;
 }
 KP_EXPORT_SYMBOL(syscall_hook_global_enabled);
+
+/* Register the single uid gate evaluated once per syscall before dispatching any
+ * callback. Passing NULL disables gating (all callbacks run). */
+void syscall_hook_set_gate(int (*gate)(void))
+{
+    syscall_hook_gate = gate;
+}
+KP_EXPORT_SYMBOL(syscall_hook_set_gate);
 
 /* scno is arg1 of el0_svc_common; on the odd kernel where that argument is
  * absent, fall back to the userspace syscall-number register (x8 native, r7
@@ -480,18 +506,32 @@ static void syscall_dispatch_before(hook_fargs8_t *args, void *udata)
     int is_compat = compat_user_mode(regs) ? 1 : 0;
     long nr = syscall_dispatch_nr(regs, args->arg1, is_compat);
 
+    if (!syscall_hook_high) return;
+
+    /* One uid gate, evaluated once per syscall for every callback, instead of a
+     * root check inside each callback. For a process that is not su-authorized
+     * nothing is dispatched, so behavior and cost are the same across all
+     * syscalls: no per-syscall fingerprint, and fstatat/statx/... cannot
+     * disagree. Slots registered with bypass_gate (the magic supercall, which
+     * authenticates with its own key) still run. */
+    int gate_ok = 1;
+    if (syscall_hook_gate) gate_ok = syscall_hook_gate() ? 1 : 0;
+
     struct syscall_hook_snapshot snap[SYSCALL_HOOK_MAX_MATCH];
-    int n = syscall_hook_collect((int)nr, is_compat, snap, SYSCALL_HOOK_MAX_MATCH);
+    int n = syscall_hook_collect((int)nr, is_compat, gate_ok, snap, SYSCALL_HOOK_MAX_MATCH);
     if (!n) return;
 
-    /* el0_svc_common sets these two before it invokes the syscall; do it here so
-     * callbacks that inspect them (resolve_pt_regs scans the stack for a
-     * matching frame) observe the same state as under the per-syscall hook. */
-    regs->orig_x0 = regs->regs[0];
-    regs->syscallno = nr;
+    /* Hooked at invoke_syscall (handler granularity) el0_svc_common has already
+     * set these; hooked at its entry we must set them ourselves so callbacks
+     * that inspect them (resolve_pt_regs scans the stack for a matching frame)
+     * see the same state as under the per-syscall hook. */
+    if (!syscall_hook_handler_granular) {
+        regs->orig_x0 = regs->regs[0];
+        regs->syscallno = nr;
+    }
 
-    /* arg1..arg3 are el0_svc_common's scno/sc_nr/table, not syscall arguments;
-     * they must reach the origin unchanged for it to pick the right handler. */
+    /* arg1..arg3 are scno/sc_nr/table, not syscall arguments; they must reach the
+     * origin unchanged for it to pick the right handler. */
     uint64_t keep_arg1 = args->arg1;
     uint64_t keep_arg2 = args->arg2;
     uint64_t keep_arg3 = args->arg3;
@@ -499,16 +539,27 @@ static void syscall_dispatch_before(hook_fargs8_t *args, void *udata)
     args->skip_origin = 0;
     args->ret = 0;
 
+    int can_skip = 0;
     for (int i = 0; i < n; i++) {
+        if (snap[i].allow_skip) can_skip = 1;
         if (snap[i].before) snap[i].before(args, snap[i].udata);
     }
 
     args->arg1 = keep_arg1;
     args->arg2 = keep_arg2;
     args->arg3 = keep_arg3;
-    /* Never let a callback skip the origin here: that would bypass the syscall's
-     * own exit handling in el0_svc_common. Use hook_syscalln_legacy to block. */
-    args->skip_origin = 0;
+
+    /* Honour skip_origin only where it means "skip this one syscall's handler".
+     * At invoke_syscall granularity el0_svc_common still runs syscall_trace_enter
+     * and syscall_trace_exit around it, so the overridden result has to be placed
+     * in regs->regs[0] here. When hooked at el0_svc_common's entry, skip_origin
+     * would skip that whole function (tracing, exit work and all), so it is
+     * refused unless the caller explicitly opted in. */
+    if (args->skip_origin && can_skip && syscall_hook_handler_granular) {
+        regs->regs[0] = args->ret;
+    } else {
+        args->skip_origin = 0;
+    }
 }
 
 static void syscall_dispatch_after(hook_fargs8_t *args, void *udata)
@@ -526,8 +577,15 @@ static void syscall_dispatch_after(hook_fargs8_t *args, void *udata)
      * not this copy. */
     long nr = syscall_dispatch_nr(regs, args->arg1, is_compat);
 
+    if (!syscall_hook_high) return;
+
+    /* Same gate as the before phase: an after callback must never run without
+     * its before callback having run. */
+    int gate_ok = 1;
+    if (syscall_hook_gate) gate_ok = syscall_hook_gate() ? 1 : 0;
+
     struct syscall_hook_snapshot snap[SYSCALL_HOOK_MAX_MATCH];
-    int n = syscall_hook_collect((int)nr, is_compat, snap, SYSCALL_HOOK_MAX_MATCH);
+    int n = syscall_hook_collect((int)nr, is_compat, gate_ok, snap, SYSCALL_HOOK_MAX_MATCH);
     if (!n) return;
 
     /* The real return value lives in regs->regs[0]; el0_svc_common returns void,
@@ -548,16 +606,39 @@ void syscall_dispatch_init(void)
         return;
     }
 
-    uintptr_t addr = kallsyms_lookup_name("el0_svc_common");
-    const char *name = "el0_svc_common";
+    /* Prefer invoke_syscall: it runs after syscall_trace_enter (seccomp/ptrace)
+     * and before syscall_trace_exit, i.e. at the same granularity as the old
+     * per-syscall hooks. Hooking there lets skip_origin skip only the real
+     * handler while el0_svc_common still performs its entry/exit work. Fall back
+     * to el0_svc_common, which is coarser and cannot honour skip_origin.
+     * GCC clones (LTO/constprop/isra) get a trailing '.' suffix; the helper
+     * requires that separator, so el0_svc_common_compat is not matched. */
+    uintptr_t addr = 0;
+    const char *name = 0;
+    int granular = 0;
+
+    addr = kallsyms_lookup_name("invoke_syscall");
+    if (addr) {
+        name = "invoke_syscall";
+        granular = 1;
+    }
     if (!addr) {
-        /* GCC clones (LTO/constprop/isra) get a trailing '.' suffix; the helper
-         * requires that separator, so el0_svc_common_compat is not matched. */
+        addr = kallsyms_lookup_name_by_suffix("invoke_syscall");
+        if (addr) {
+            name = "invoke_syscall.<suffix>";
+            granular = 1;
+        }
+    }
+    if (!addr) {
+        addr = kallsyms_lookup_name("el0_svc_common");
+        if (addr) name = "el0_svc_common";
+    }
+    if (!addr) {
         addr = kallsyms_lookup_name_by_suffix("el0_svc_common");
         if (addr) name = "el0_svc_common.<suffix>";
     }
     if (!addr) {
-        log_boot("syscall dispatcher: el0_svc_common not found, keep per-syscall hooks\n");
+        log_boot("syscall dispatcher: no invoke_syscall/el0_svc_common, keep per-syscall hooks\n");
         return;
     }
 
@@ -567,15 +648,17 @@ void syscall_dispatch_init(void)
         return;
     }
 
+    syscall_hook_handler_granular = granular;
     syscall_hook_barrier();
     syscall_hook_global = 1;
-    log_boot("syscall dispatcher: hooked %s at %llx, global syscall hook enabled\n", name, (uint64_t)addr);
+    log_boot("syscall dispatcher: hooked %s at %llx (skip_origin %s), global syscall hook enabled\n", name,
+             (uint64_t)addr, granular ? "supported" : "unsupported");
 }
 KP_EXPORT_SYMBOL(syscall_dispatch_init);
 
 hook_err_t hook_syscalln(int nr, int narg, void *before, void *after, void *udata)
 {
-    if (syscall_hook_global) return syscall_hook_add(nr, 0, before, after, udata);
+    if (syscall_hook_global) return syscall_hook_add(nr, 0, before, after, udata, 0, 0);
     if (sys_call_table) return fp_wrap_syscalln(nr, narg, 0, before, after, udata);
     return inline_wrap_syscalln(nr, narg, 0, before, after, udata);
 }
@@ -591,11 +674,26 @@ KP_EXPORT_SYMBOL(unhook_syscalln);
 
 hook_err_t hook_compat_syscalln(int nr, int narg, void *before, void *after, void *udata)
 {
-    if (syscall_hook_global) return syscall_hook_add(nr, 1, before, after, udata);
+    if (syscall_hook_global) return syscall_hook_add(nr, 1, before, after, udata, 0, 0);
     if (compat_sys_call_table) return fp_wrap_syscalln(nr, narg, 1, before, after, udata);
     return inline_wrap_syscalln(nr, narg, 1, before, after, udata);
 }
 KP_EXPORT_SYMBOL(hook_compat_syscalln);
+
+/* Like hook_syscalln but the callback may set skip_origin to suppress the real
+ * syscall. Honoured only when the dispatcher is hooked at invoke_syscall; if it
+ * is hooked at el0_svc_common (or not at all) this falls back to the per-syscall
+ * mechanism, which implements skip_origin at handler granularity. */
+hook_err_t hook_syscalln_override(int nr, int narg, void *before, void *after, void *udata)
+{
+    /* bypass_gate: the magic supercall authenticates with its own key, so it must
+     * still be dispatched for a uid that is not on the su allow list. */
+    if (syscall_hook_global && syscall_hook_handler_granular)
+        return syscall_hook_add(nr, 0, before, after, udata, 1, 1);
+    if (sys_call_table) return fp_wrap_syscalln(nr, narg, 0, before, after, udata);
+    return inline_wrap_syscalln(nr, narg, 0, before, after, udata);
+}
+KP_EXPORT_SYMBOL(hook_syscalln_override);
 
 void unhook_compat_syscalln(int nr, void *before, void *after)
 {

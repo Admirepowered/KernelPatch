@@ -76,14 +76,18 @@ void unhook_compat_syscalln(int nr, void *before, void *after);
 These automatically select the best hooking method for the current kernel.
 
 On kernels with syscall wrappers, `hook_syscalln` first tries to install a single
-inline hook on `el0_svc_common`, the C entry every syscall (native and compat32)
-passes through. Registrations are dispatched from that one hook, so the syscall
-table is never modified and all syscalls share the same trampoline overhead.
-If `el0_svc_common` cannot be resolved (missing symbol, no syscall wrapper), it
-transparently falls back to the per-syscall `fp_hook_syscalln` /
+inline hook on `invoke_syscall`, the function every syscall (native and compat32)
+goes through after `syscall_trace_enter` and before `syscall_trace_exit`.
+Registrations are dispatched from that one hook, so the syscall table is never
+modified and all syscalls share the same trampoline overhead with no per-syscall
+timing fingerprint. If `invoke_syscall` is not a symbol (inlined, etc.) it falls
+back to hooking `el0_svc_common`, then to the per-syscall `fp_hook_syscalln` /
 `inline_hook_syscalln` mechanism.
 
-`syscall_hook_global_enabled()` reports which mode is active.
+`syscall_hook_global_enabled()` reports whether the global hook is active.
+`hook_syscalln_override` is like `hook_syscalln` but its callback may set
+`skip_origin`; it is honoured when the hook sits on `invoke_syscall` and falls
+back to the per-syscall mechanism otherwise.
 
 ## Callback Signature
 
@@ -189,12 +193,13 @@ void before_openat(hook_fargs4_t *args, void *udata)
 }
 ```
 
-> **Not supported by the global `el0_svc_common` dispatcher.** Skipping origin
-> there would also skip the syscall-exit work `el0_svc_common` performs after the
-> handler returns. `skip_origin` is honoured only by the per-syscall mechanism
-> (`hook_syscalln_legacy`, `fp_hook_syscalln`, `inline_hook_syscalln`). If you
-> need to short-circuit a syscall, register it through one of those, or prevent
-> the effect from inside the handler instead.
+> Register such a hook with `hook_syscalln_override`, not `hook_syscalln`. It is
+> honoured only when the global dispatcher is hooked at `invoke_syscall` (handler
+> granularity), where skipping origin suppresses just the real syscall while
+> `el0_svc_common` still performs its entry/exit work. If the dispatcher could
+> only hook `el0_svc_common`, or is not active, `hook_syscalln_override` falls
+> back to the per-syscall mechanism, which also supports `skip_origin`.
+> `hook_syscalln` itself never honours it.
 
 ## Notes
 
