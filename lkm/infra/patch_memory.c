@@ -25,26 +25,42 @@
 
 #include "../include/kp_lkm.h"
 
-/* Detect the dcache flush API: android13-5.10 backported dcache_clean_inval_poc,
- * android12-5.10 still has __flush_dcache_area. Kbuild sets KP_NEW_DCACHE_FLUSH. */
-#ifndef KP_NEW_DCACHE_FLUSH
-#define KP_NEW_DCACHE_FLUSH 0
-#endif
-#if KP_NEW_DCACHE_FLUSH
-#define kp_flush_dcache(start, sz)                                                    \
-	({                                                                               \
-		unsigned long __start = (start);                                         \
-		dcache_clean_inval_poc(__start, __start + (sz));                         \
-	})
-#define kp_flush_icache(start, end)                                                    \
-	({                                                                               \
-		unsigned long __start = (start);                                         \
-		caches_clean_inval_pou(__start, (end));                                  \
-	})
-#else
-#define kp_flush_dcache(start, sz) __flush_dcache_area((void *)(start), (sz))
-#define kp_flush_icache(start, end) __flush_icache_range((start), (end))
-#endif
+/* Cache flush helpers were renamed across kernel versions: android12-5.10 has
+ * __flush_dcache_area / __flush_icache_range; android13-5.10 backported the
+ * (start,end) shaped dcache_clean_inval_poc / caches_clean_inval_pou. Linking
+ * them statically pins the .ko to one KMI — an UND reference to a name the
+ * target kernel's kallsyms lacks fails the load outright. Resolve at runtime
+ * with fallback chains instead, so a single .ko covers every 5.10 KMI and OEM
+ * builds. Signatures are ABI-compatible when invoked through these wrappers
+ * (two pointer-sized args in x0/x1). */
+typedef void (*kp_flush_range_fn)(unsigned long start, unsigned long end);
+/* dcache_clean_inval_poc / caches_clean_inval_pou / __flush_icache_range / flush_icache_range */
+static kp_flush_range_fn kp_dcache_range_fn;
+static kp_flush_range_fn kp_icache_range_fn;
+/* __flush_dcache_area / flush_dcache_area take (start, size) instead. */
+static void (*kp_dcache_area_fn)(void *start, size_t len);
+
+__attribute__((no_sanitize("cfi")))
+static void kp_flush_dcache(unsigned long start, unsigned long len)
+{
+	if (kp_dcache_range_fn) {
+		kp_dcache_range_fn(start, start + len);
+	} else if (kp_dcache_area_fn) {
+		kp_dcache_area_fn((void *)start, len);
+	} else {
+		logkw("no dcache flush helper resolved; skipping flush\n");
+	}
+}
+
+__attribute__((no_sanitize("cfi")))
+static void kp_flush_icache(unsigned long start, unsigned long end)
+{
+	if (kp_icache_range_fn) {
+		kp_icache_range_fn(start, end);
+	} else {
+		logkw("no icache flush helper resolved; skipping flush\n");
+	}
+}
 
 /* Resolve the physical address of a kernel VA through init_mm's page tables.
  * Used for the data patch path (sys_call_table is rodata, not mapped via the
@@ -119,10 +135,25 @@ int kp_patch_memory_init(void)
 	 * but its stop_machine/struct-layout mismatch panics on some GKI builds.
 	 * Text and data are now both patched through the fixmap poke
 	 * (kp_patch_data) + manual cache flush, so no kernel helper is needed. */
+	kp_dcache_range_fn = (kp_flush_range_fn)kp_resolve_symbol("dcache_clean_inval_poc");
+	kp_dcache_area_fn = (void (*)(void *, size_t))kp_resolve_symbol("__flush_dcache_area");
+	if (!kp_dcache_area_fn)
+		kp_dcache_area_fn = (void (*)(void *, size_t))kp_resolve_symbol("flush_dcache_area");
+	kp_icache_range_fn = (kp_flush_range_fn)kp_resolve_symbol("caches_clean_inval_pou");
+	if (!kp_icache_range_fn)
+		kp_icache_range_fn = (kp_flush_range_fn)kp_resolve_symbol("__flush_icache_range");
+	if (!kp_icache_range_fn)
+		kp_icache_range_fn = (kp_flush_range_fn)kp_resolve_symbol("flush_icache_range");
+
+	if (!kp_dcache_range_fn && !kp_dcache_area_fn)
+		logkw("no dcache flush helper found; text patches may not be visible\n");
+	logki("patch memory ready (fixmap poke; dcache=%s icache=%s)\n",
+	      kp_dcache_range_fn ? "clean_inval_poc" : (kp_dcache_area_fn ? "flush_dcache_area" : "none"),
+	      kp_icache_range_fn ? "clean_inval_pou" : "none");
+
 	kp_patch_init_mm = (struct mm_struct *)kp_resolve_symbol("init_mm");
 	if (!kp_patch_init_mm)
 		logkw("failed to resolve init_mm; data (sys_call_table) patch disabled\n");
-	logki("patch memory ready (fixmap poke; aarch64_insn_patch_text not used)\n");
 	return 0;
 }
 
