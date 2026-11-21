@@ -64,15 +64,6 @@ static void (*kp_execmem_free)(void *ptr);
 static void (*kp_flush_icache_all_fn)(void);
 static int (*kp_set_memory_x)(unsigned long addr, int numpages);
 static int (*kp_set_memory_nx)(unsigned long addr, int numpages);
-/* __vmalloc_node_range was renamed to __vmalloc_node_range_noprof in 6.12;
- * both live in kallsyms. Used with PAGE_KERNEL_EXEC to get directly-writable
- * executable memory where set_memory_x() is refused for plain vmalloc. */
-typedef void *(*kp_vmalloc_exec_fn_t)(unsigned long size, unsigned long align,
-				      unsigned long start, unsigned long end, gfp_t gfp_mask,
-				      pgprot_t prot, unsigned long vm_flags, int node,
-				      const void *caller);
-static kp_vmalloc_exec_fn_t kp_vmalloc_exec_fn;
-
 /* init_mm (resolved at runtime, not exported on GKI). */
 static struct mm_struct *kp_kpm_init_mm;
 
@@ -130,7 +121,6 @@ static void kp_clear_bti_gp(unsigned long base, unsigned long size)
  * module_lock (or at init), so a single slot is sufficient. */
 enum kp_exec_src {
 	KP_EXEC_MODULE_ALLOC,
-	KP_EXEC_VMALLOC_EXEC,
 	KP_EXEC_VMALLOC,
 	KP_EXEC_EXECMEM,
 };
@@ -158,12 +148,6 @@ static void *kp_alloc_exec_try(unsigned long size, int src)
 		if (kp_module_alloc)
 			p = kp_module_alloc(size);
 		break;
-	case KP_EXEC_VMALLOC_EXEC:
-		if (kp_vmalloc_exec_fn)
-			p = kp_vmalloc_exec_fn(size, 1, VMALLOC_START, VMALLOC_END, GFP_KERNEL,
-					       PAGE_KERNEL_EXEC, VM_FLUSH_RESET_PERMS, NUMA_NO_NODE,
-					       __builtin_return_address(0));
-		break;
 	case KP_EXEC_VMALLOC:
 		p = vmalloc(size);
 		break;
@@ -186,7 +170,6 @@ static void kp_free_exec_src(void *region, int src)
 		else
 			vfree(region);
 		break;
-	case KP_EXEC_VMALLOC_EXEC:
 	case KP_EXEC_VMALLOC:
 		vfree(region);
 		break;
@@ -207,17 +190,16 @@ static void kp_free_exec_src(void *region, int src)
  * CFI-instrumented caller, the kCFI type-hash load of [fnptr - 4] dereferences
  * NULL when the allocator is absent (6.10+ has no module_alloc).
  *
- * Allocation order: module_alloc (up to ~6.8) -> __vmalloc_node_range with
- * PAGE_KERNEL_EXEC (directly writable+executable; plain vmalloc cannot be
- * flipped executable via set_memory_x on 6.12+) -> plain vmalloc (NX until
- * the caller applies set_memory_x) -> execmem_alloc (may be ROX, last
- * resort). Every candidate is probed for writability before being returned. */
+ * Allocation order: module_alloc (up to ~6.8) -> plain vmalloc -> execmem_alloc.
+ * The memory MUST be populated by plain writes BEFORE the caller applies
+ * set_memory_x(): on 6.12+ kernels with FEAT_POE, set_memory_x converts the
+ * mapping to read-only-X through a permission overlay, so pre-executable
+ * mappings (execmem EXECMEM_ROX, PAGE_KERNEL_EXEC vmallocs) cannot be written
+ * at all. Every candidate is probed for writability before being returned. */
 __attribute__((no_sanitize("cfi"), __noinline__))
 static void *kp_malloc_exec(unsigned long size)
 {
-	static const int order[] = {
-		KP_EXEC_MODULE_ALLOC, KP_EXEC_VMALLOC_EXEC, KP_EXEC_VMALLOC, KP_EXEC_EXECMEM,
-	};
+	static const int order[] = { KP_EXEC_MODULE_ALLOC, KP_EXEC_VMALLOC, KP_EXEC_EXECMEM };
 
 	for (int i = 0; i < ARRAY_SIZE(order); i++) {
 		void *p = kp_alloc_exec_try(size, order[i]);
@@ -1208,17 +1190,12 @@ int kp_kpm_init(void)
 	kp_module_memfree = (void (*)(void *))kallsyms_lookup_name("module_memfree");
 	kp_execmem_alloc = (void *)kallsyms_lookup_name("execmem_alloc");
 	kp_execmem_free = (void *)kallsyms_lookup_name("execmem_free");
-	kp_vmalloc_exec_fn =
-		(kp_vmalloc_exec_fn_t)kallsyms_lookup_name("__vmalloc_node_range");
-	if (!kp_vmalloc_exec_fn)
-		kp_vmalloc_exec_fn =
-			(kp_vmalloc_exec_fn_t)kallsyms_lookup_name("__vmalloc_node_range_noprof");
 	kp_flush_icache_all_fn = (void (*)(void))kallsyms_lookup_name("flush_icache_all");
 	kp_set_memory_x = (int (*)(unsigned long, int))kallsyms_lookup_name("set_memory_x");
 	kp_set_memory_nx = (int (*)(unsigned long, int))kallsyms_lookup_name("set_memory_nx");
 	kp_kpm_init_mm = (struct mm_struct *)kallsyms_lookup_name("init_mm");
-	logki("kpm runtime: module_alloc=%px execmem_alloc=%px vmalloc_exec=%px set_memory_x=%px init_mm=%px\n",
-	      kp_module_alloc, kp_execmem_alloc, kp_vmalloc_exec_fn, kp_set_memory_x, kp_kpm_init_mm);
+	logki("kpm runtime: module_alloc=%px execmem_alloc=%px set_memory_x=%px init_mm=%px\n",
+	      kp_module_alloc, kp_execmem_alloc, kp_set_memory_x, kp_kpm_init_mm);
 
 	if (!kp_module_alloc && !kp_execmem_alloc) {
 		logke("no module/execmem allocator; KPM loading disabled\n");
