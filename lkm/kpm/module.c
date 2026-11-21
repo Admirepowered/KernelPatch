@@ -13,6 +13,7 @@
 #include "relo.h"
 #include "symbols.h"
 
+#include <linux/atomic.h>
 #include <linux/err.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
@@ -116,24 +117,63 @@ static void kp_clear_bti_gp(unsigned long base, unsigned long size)
 	}
 }
 
+/* Tracks which allocator produced the most recent kp_malloc_exec region so
+ * kp_free_exec pairs it correctly. Allocations and frees happen under
+ * module_lock (or at init), so a single flag is sufficient. */
+static atomic_t kp_exec_vmalloc_src = ATOMIC_INIT(0);
+
+static int kp_do_set_memory_x(unsigned long addr, int npages);
+
 /* Runtime-resolved kernel functions and raw KPM callbacks cannot participate
  * in this LKM's CFI jump table. Keep CFI enabled everywhere else and exempt
  * only these indirect-call boundaries. noinline: if inlined into a
  * CFI-instrumented caller, the kCFI type-hash load of [fnptr - 4] dereferences
- * NULL when the allocator is absent (6.10+ has no module_alloc). */
+ * NULL when the allocator is absent (6.10+ has no module_alloc).
+ *
+ * execmem_alloc is only the last resort: on 6.12+ kernels with
+ * EXECMEM_ROX (overlay-based read-only-X regions) it hands out memory that
+ * cannot be written to populate the trampoline/KPM image — the population
+ * write faults with "write to read-only memory". vmalloc pages are plain
+ * RW/NX and set_memory_x flips them executable, which is exactly how
+ * module_alloc(NX) memory was handled before. */
 __attribute__((no_sanitize("cfi"), __noinline__))
 static void *kp_malloc_exec(unsigned long size)
 {
-	if (kp_module_alloc)
+	void *p;
+
+	if (kp_module_alloc) {
+		atomic_set(&kp_exec_vmalloc_src, 0);
 		return kp_module_alloc(size);
-	if (kp_execmem_alloc)
+	}
+
+	if (kp_set_memory_x) {
+		p = vmalloc(size);
+		if (p) {
+			int npages = PAGE_ALIGN(size) >> PAGE_SHIFT;
+			if (!kp_do_set_memory_x((unsigned long)p, npages)) {
+				atomic_set(&kp_exec_vmalloc_src, 1);
+				return p;
+			}
+			vfree(p);
+		}
+	}
+
+	if (kp_execmem_alloc) {
+		atomic_set(&kp_exec_vmalloc_src, 0);
 		return kp_execmem_alloc(0 /* EXECMEM_MODULE_TEXT */, size);
+	}
+
+	atomic_set(&kp_exec_vmalloc_src, 1);
 	return vmalloc(size);
 }
 
 __attribute__((no_sanitize("cfi"), __noinline__))
 static void kp_free_exec(void *region)
 {
+	if (atomic_read(&kp_exec_vmalloc_src)) {
+		vfree(region);
+		return;
+	}
 	if (kp_module_memfree)
 		kp_module_memfree(region);
 	else if (kp_execmem_free)
