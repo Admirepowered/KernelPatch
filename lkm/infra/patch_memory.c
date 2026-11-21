@@ -25,41 +25,47 @@
 
 #include "../include/kp_lkm.h"
 
-/* Cache flush helpers were renamed across kernel versions: android12-5.10 has
- * __flush_dcache_area / __flush_icache_range; android13-5.10 backported the
- * (start,end) shaped dcache_clean_inval_poc / caches_clean_inval_pou. Linking
- * them statically pins the .ko to one KMI — an UND reference to a name the
- * target kernel's kallsyms lacks fails the load outright. Resolve at runtime
- * with fallback chains instead, so a single .ko covers every 5.10 KMI and OEM
- * builds. Signatures are ABI-compatible when invoked through these wrappers
- * (two pointer-sized args in x0/x1). */
-typedef void (*kp_flush_range_fn)(unsigned long start, unsigned long end);
-/* dcache_clean_inval_poc / caches_clean_inval_pou / __flush_icache_range / flush_icache_range */
-static kp_flush_range_fn kp_dcache_range_fn;
-static kp_flush_range_fn kp_icache_range_fn;
-/* __flush_dcache_area / flush_dcache_area take (start, size) instead. */
-static void (*kp_dcache_area_fn)(void *start, size_t len);
+/* Cache maintenance is done with inline asm instead of calling the kernel's
+ * helpers (dcache_clean_inval_poc / __flush_dcache_area / caches_clean_inval_pou
+ * / __flush_icache_range): their names were renamed across 5.10 versions (a
+ * statically linked UND reference to the wrong name fails the load outright),
+ * and reaching them through runtime-resolved function pointers issues an
+ * indirect BLR at the kernel's asm functions, which has no BTI landing pad on
+ * every build — the resulting BRK re-enters this module's own CFI-failure hook
+ * (installed moments earlier by kp_bypass_kcfi) and recurses until the task
+ * stack overflows. The instructions below are architecturally available at
+ * EL1 on every arm64 kernel and replicate the helpers' exact behavior. */
+static inline unsigned long kp_cache_line_size(bool icache)
+{
+	unsigned long ctr;
+	asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
+	unsigned long shift = icache ? ((ctr >> 24) & 0xf) : ((ctr >> 16) & 0xf);
+	return 4UL << shift;
+}
 
 __attribute__((no_sanitize("cfi")))
 static void kp_flush_dcache(unsigned long start, unsigned long len)
 {
-	if (kp_dcache_range_fn) {
-		kp_dcache_range_fn(start, start + len);
-	} else if (kp_dcache_area_fn) {
-		kp_dcache_area_fn((void *)start, len);
-	} else {
-		logkw("no dcache flush helper resolved; skipping flush\n");
-	}
+	unsigned long end = start + len;
+	unsigned long line = kp_cache_line_size(false);
+
+	start &= ~(line - 1);
+	for (unsigned long addr = start; addr < end; addr += line)
+		asm volatile("dc civac, %0" :: "r"(addr));
+	asm volatile("dsb sy");
 }
 
 __attribute__((no_sanitize("cfi")))
 static void kp_flush_icache(unsigned long start, unsigned long end)
 {
-	if (kp_icache_range_fn) {
-		kp_icache_range_fn(start, end);
-	} else {
-		logkw("no icache flush helper resolved; skipping flush\n");
+	unsigned long line = kp_cache_line_size(true);
+
+	for (unsigned long addr = start & ~(line - 1); addr < end; addr += line) {
+		asm volatile("dc cvau, %0" :: "r"(addr));
+		asm volatile("ic ivau, %0" :: "r"(addr));
 	}
+	asm volatile("dsb ish");
+	asm volatile("isb");
 }
 
 /* Resolve the physical address of a kernel VA through init_mm's page tables.
@@ -134,22 +140,9 @@ int kp_patch_memory_init(void)
 	/* aarch64_insn_patch_text() used to be resolved here for text patching,
 	 * but its stop_machine/struct-layout mismatch panics on some GKI builds.
 	 * Text and data are now both patched through the fixmap poke
-	 * (kp_patch_data) + manual cache flush, so no kernel helper is needed. */
-	kp_dcache_range_fn = (kp_flush_range_fn)kp_resolve_symbol("dcache_clean_inval_poc");
-	kp_dcache_area_fn = (void (*)(void *, size_t))kp_resolve_symbol("__flush_dcache_area");
-	if (!kp_dcache_area_fn)
-		kp_dcache_area_fn = (void (*)(void *, size_t))kp_resolve_symbol("flush_dcache_area");
-	kp_icache_range_fn = (kp_flush_range_fn)kp_resolve_symbol("caches_clean_inval_pou");
-	if (!kp_icache_range_fn)
-		kp_icache_range_fn = (kp_flush_range_fn)kp_resolve_symbol("__flush_icache_range");
-	if (!kp_icache_range_fn)
-		kp_icache_range_fn = (kp_flush_range_fn)kp_resolve_symbol("flush_icache_range");
-
-	if (!kp_dcache_range_fn && !kp_dcache_area_fn)
-		logkw("no dcache flush helper found; text patches may not be visible\n");
-	logki("patch memory ready (fixmap poke; dcache=%s icache=%s)\n",
-	      kp_dcache_range_fn ? "clean_inval_poc" : (kp_dcache_area_fn ? "flush_dcache_area" : "none"),
-	      kp_icache_range_fn ? "clean_inval_pou" : "none");
+	 * (kp_patch_data) + inline-asm cache maintenance, so no kernel helper is
+	 * needed at all. */
+	logki("patch memory ready (fixmap poke; inline dcache/icache maintenance)\n");
 
 	kp_patch_init_mm = (struct mm_struct *)kp_resolve_symbol("init_mm");
 	if (!kp_patch_init_mm)
