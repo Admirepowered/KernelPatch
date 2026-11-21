@@ -139,6 +139,7 @@ static int kp_probe_write(void *p)
 	return copy_to_kernel_nofault(p, &zero, sizeof(zero));
 }
 
+__attribute__((no_sanitize("cfi")))
 static void *kp_alloc_exec_try(unsigned long size, int src)
 {
 	void *p = NULL;
@@ -159,6 +160,7 @@ static void *kp_alloc_exec_try(unsigned long size, int src)
 	return p;
 }
 
+__attribute__((no_sanitize("cfi")))
 static void kp_free_exec_src(void *region, int src)
 {
 	switch (src) {
@@ -1208,6 +1210,10 @@ int kp_kpm_init(void)
 	kp_callback_tramp = kp_malloc_exec(PAGE_SIZE);
 	if (kp_callback_tramp) {
 		kp_callback_tramp_size = PAGE_SIZE;
+		/* Populate BEFORE making it executable: on 6.12+ kernels with
+		 * FEAT_POE, set_memory_x() flips the mapping to read-only-X
+		 * through a permission overlay and later writes would fault. */
+		memset(kp_callback_tramp, 0, PAGE_SIZE);
 		if (kp_set_memory_x) {
 			int xret = kp_do_set_memory_x((unsigned long)kp_callback_tramp, 1);
 			if (xret)
@@ -1216,7 +1222,6 @@ int kp_kpm_init(void)
 		}
 		/* module_alloc may return PXN/NX; clear PXN/UXN/GP like KPM images */
 		kp_clear_bti_gp((unsigned long)kp_callback_tramp, PAGE_SIZE);
-		memset(kp_callback_tramp, 0, PAGE_SIZE);
 	} else {
 		logkw("callback trampoline alloc failed; KPM kallsyms iteration unshielded\n");
 	}
